@@ -598,6 +598,16 @@ function updateModeUI(mode) {
   syncRowSelectable();
 }
 
+// Resolve what the output mode will actually be. In "auto" we can detect from
+// the template alone (a tile group => grid, otherwise individual) without
+// needing data, so the grid/individual options reflect reality immediately.
+function effectiveMode() {
+  const m = $("mode").value;
+  if (m !== "auto") return m;
+  if (!state.tpl) return "auto";
+  return findTileGroup(state.tpl) ? "grid" : "individual";
+}
+
 function populateNameField(res) {
   const sel = $("nameField");
   const prev = sel.value;
@@ -930,7 +940,7 @@ function regenerate() {
   if (!state.tpl) {
     clearOutputs("Load a template (or click <strong>Load example</strong>), then add data rows below.");
     showMessage("", "");
-    updateModeUI(mode);
+    updateModeUI(effectiveMode());
     updateBackdropUI();
     return;
   }
@@ -944,7 +954,7 @@ function regenerate() {
     $("sheetSelect").style.display = "none";
     showSvgInStage(applyBackdrop(state.tpl, state.showBackdrop));
     showMessage("hint", "Previewing the template. Add a data row below (or upload a CSV) to merge your data.");
-    updateModeUI(mode);
+    updateModeUI(effectiveMode());
     updateBackdropUI();
     return;
   }
@@ -960,7 +970,7 @@ function regenerate() {
     $("info").style.display = "none";
     $("dlOneBtn").disabled = true; $("dlAllBtn").disabled = true;
     $("sheetSelect").style.display = "none";
-    updateModeUI(mode);
+    updateModeUI(effectiveMode());
     updateBackdropUI();
     return;
   }
@@ -1099,7 +1109,7 @@ wireDrop("tplDrop", "tplInput", (t) => { state.tpl = t; maybeInitColumnsFromTemp
 wireDrop("csvDrop", "csvInput", (t) => { loadCsvIntoModel(t); }, "csvName");
 $("gap").addEventListener("input", regenerate);
 $("margin").addEventListener("input", regenerate);
-$("mode").addEventListener("change", () => { updateModeUI($("mode").value); regenerate(); });
+$("mode").addEventListener("change", () => { updateModeUI(effectiveMode()); regenerate(); });
 $("nameField").addEventListener("change", regenerate);
 $("backdropToggle").addEventListener("change", (e) => { state.showBackdrop = e.target.checked; refreshPreview(); });
 $("genBtn").addEventListener("click", regenerate);
@@ -1121,7 +1131,7 @@ $("exampleBtn").addEventListener("click", () => {
   }
   run();
 });
-updateModeUI($("mode").value);
+updateModeUI(effectiveMode());
 updateBackdropUI();
 renderDataEditor();
 </script>
