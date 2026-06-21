@@ -192,7 +192,6 @@
       <h2 style="margin:0">Data<span id="dataCount"></span></h2>
       <div class="data-toolbar">
         <button id="useTplFieldsBtn" class="ghost" disabled>Use template fields</button>
-        <button id="addColBtn" class="ghost">+ Column</button>
         <button id="addRowBtn" class="ghost" disabled>+ Row</button>
         <button id="clearRowsBtn" class="ghost" disabled>Clear rows</button>
       </div>
@@ -702,24 +701,6 @@ function addRow() {
   run();
   focusCell("#dataArea tbody tr:last-child td:not(.idxcol) input");
 }
-function addColumn() {
-  const used = new Set(state.data.columns.map((c) => c.toLowerCase()));
-  let name = "";
-  if (state.tpl) {
-    const tf = templateFieldNames(state.tpl).find((f) => !used.has(f.toLowerCase()));
-    if (tf) name = tf;
-  }
-  if (!name) {
-    let n = state.data.columns.length + 1;
-    name = "Column " + n;
-    while (used.has(name.toLowerCase())) { n++; name = "Column " + n; }
-  }
-  state.data.columns.push(name);
-  if (!state.data.rows.length) state.data.rows.push(state.data.columns.map(() => ""));
-  else state.data.rows.forEach((r) => r.push(""));
-  run();
-  focusCell('#dataArea thead input[data-col="' + (state.data.columns.length - 1) + '"]');
-}
 function useTemplateFields() {
   if (!state.tpl) return;
   const used = new Set(state.data.columns.map((c) => c.toLowerCase()));
@@ -812,9 +793,11 @@ function renderDataEditor() {
 
   if (!columns.length) {
     area.innerHTML =
-      '<div class="data-empty">No data yet. Click <strong>+ Column</strong> to start a table' +
-      (tplSet.size ? ', or <strong>Use template fields</strong> to add the template’s placeholders' : "") +
-      ', then <strong>+ Row</strong> to add records — no CSV file needed.</div>';
+      '<div class="data-empty">No data yet. ' +
+      (tplSet.size
+        ? 'Click <strong>Use template fields</strong> to add the template’s placeholders, then <strong>+ Row</strong> to add records — no CSV file needed.'
+        : 'Upload a template or CSV to get started.') +
+      '</div>';
     syncDataButtons();
     return;
   }
@@ -1123,7 +1106,6 @@ $("genBtn").addEventListener("click", regenerate);
 $("sheetSelect").addEventListener("change", (e) => { state.current = parseInt(e.target.value, 10); renderPreview(); });
 $("dlAllBtn").addEventListener("click", downloadAll);
 $("addRowBtn").addEventListener("click", addRow);
-$("addColBtn").addEventListener("click", addColumn);
 $("useTplFieldsBtn").addEventListener("click", useTemplateFields);
 $("clearRowsBtn").addEventListener("click", clearRows);
 $("exampleBtn").addEventListener("click", () => {
