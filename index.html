@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Nametag Generator — CSV → laser-ready grid</title>
+<title>MailMerge-SVG — CSV → laser-ready grid or per-row certificates</title>
 <style>
   :root {
     --bg: #0f1116; --panel: #1a1e27; --panel2: #222734; --line: #313a4d;
@@ -78,8 +78,8 @@
 </head>
 <body>
 <header>
-  <h1>Nametag Generator</h1>
-  <p>Mail-merge a CSV onto an SVG template and tile the tags into a laser-ready grid — all in your browser. Nothing is uploaded.</p>
+  <h1>MailMerge&#8209;SVG</h1>
+  <p>Mail-merge a CSV onto an SVG template — tile it into a laser-ready grid, or make one page per row (certificates, badges). All in your browser; nothing is uploaded.</p>
 </header>
 <main>
   <div class="panel" id="controls">
@@ -103,7 +103,16 @@
       <div class="filename" id="csvName"></div>
     </div>
 
-    <div class="row">
+    <div class="field">
+      <label>Output mode</label>
+      <select id="mode" style="width:100%">
+        <option value="auto">Auto-detect</option>
+        <option value="grid">Grid (tiled, laser cut)</option>
+        <option value="individual">One file per row (certificates)</option>
+      </select>
+    </div>
+
+    <div class="row" id="gridOpts">
       <div class="field">
         <label>Gap (mm)</label>
         <input type="number" id="gap" value="2" min="0" step="0.5">
@@ -112,6 +121,11 @@
         <label>Margin (mm)</label>
         <input type="number" id="margin" value="0" min="0" step="0.5">
       </div>
+    </div>
+
+    <div class="field" id="indivOpts" style="display:none">
+      <label>Name files by</label>
+      <select id="nameField" style="width:100%"></select>
     </div>
 
     <div class="actions">
@@ -127,32 +141,35 @@
       <h2 style="margin:0">Preview</h2>
       <div style="display:flex; gap:8px; align-items:center;">
         <select id="sheetSelect" style="display:none"></select>
-        <a class="dl" id="dlOne" download><button id="dlOneBtn" disabled>Download sheet</button></a>
-        <a class="dl" id="dlAll"><button id="dlAllBtn" class="ghost" disabled>Download all</button></a>
+        <a class="dl" id="dlOne" download><button id="dlOneBtn" disabled>Download</button></a>
+        <a class="dl" id="dlAll"><button id="dlAllBtn" class="ghost" disabled>Download all (.zip)</button></a>
       </div>
     </div>
 
     <div class="info" id="info" style="display:none; margin-bottom:14px;"></div>
 
     <div class="stage" id="stage">
-      <div class="empty">Load a template and a CSV (or click <strong>Load example</strong>) to see your grid.</div>
+      <div class="empty">Load a template and a CSV (or click <strong>Load example</strong>) to get started.</div>
     </div>
   </div>
 </main>
 <footer>
-  Tip: a template must contain a group labelled <code>inkscape:label="Nametag"</code> with one or more
-  <code>{{TOKEN}}</code> placeholders and a cut outline labelled <code>Nametag Border</code>
-  (rect, circle, ellipse, polygon, or polyline). CSV column names are matched to the placeholders
-  automatically. Host this file free on GitHub Pages, a gist (via htmlpreview), or anywhere static.
+  Tip: for <strong>grid</strong> mode the template needs a tile group labelled <code>inkscape:label="Nametag"</code>
+  (or <code>Tile</code>/<code>Cell</code>) with a cut outline labelled <code>Nametag Border</code>. For
+  <strong>individual</strong> mode any whole-page SVG works. Either way, put <code>{{TOKEN}}</code> placeholders in the
+  artwork and CSV column names are matched to them automatically. Host this file free on GitHub Pages, a gist (via htmlpreview), or anywhere static.
 </footer>
 
 <script>
 "use strict";
 
-/* ---------------- core merge logic (ported from nametag_generator.py) -------- */
+/* ---------------- core merge logic (ported from mailmerge.py) -------- */
 
 const UNIT_TO_MM = { "": null, "mm": 1, "cm": 10, "q": 0.25, "in": 25.4,
                      "pt": 25.4/72, "pc": 25.4/6, "px": 25.4/96, "%": null };
+
+// Grid mode looks for a repeating tile group with one of these Inkscape labels.
+const TILE_LABELS = ["Nametag", "Tile", "Cell"];
 
 function getAttr(tag, name) {
   const re = new RegExp(name.replace(/[-/\\^$*+?.()|[\]{}]/g, "\\$&") + '="([^"]*)"');
@@ -192,6 +209,16 @@ function findLabeledGroup(svg, label) {
   throw new Error('Unbalanced <g> tags while extracting "' + label + '".');
 }
 
+function findTileGroup(svg) {
+  for (const label of TILE_LABELS) {
+    if (svg.indexOf('inkscape:label="' + label + '"') >= 0) {
+      try { const [start, end] = findLabeledGroup(svg, label); return { start, end, label }; }
+      catch (e) { continue; }
+    }
+  }
+  return null;
+}
+
 function scaleFromDim(dim, ext) {
   const [val, unit] = parseLength(dim);
   if (val == null || !ext) return null;
@@ -227,17 +254,17 @@ function shapeBBox(name, el) {
   }
   return [null, null];
 }
-function parseTagGeometry(xml) {
-  const pos = xml.indexOf('inkscape:label="Nametag Border"');
-  if (pos < 0) throw new Error('Could not find an element with inkscape:label="Nametag Border".');
+function parseTagGeometry(xml, borderLabel) {
+  const pos = xml.indexOf('inkscape:label="' + borderLabel + '"');
+  if (pos < 0) throw new Error('Could not find an element with inkscape:label="' + borderLabel + '".');
   const s = xml.lastIndexOf("<", pos), e = xml.indexOf(">", pos);
-  if (s < 0 || e < 0) throw new Error('Malformed "Nametag Border" element.');
+  if (s < 0 || e < 0) throw new Error('Malformed "' + borderLabel + '" element.');
   const el = xml.slice(s, e + 1);
   const nm = (el.match(/<\s*([A-Za-z0-9:]+)/) || [])[1] || "";
   const tagName = nm.split(":").pop().toLowerCase();
   const [w, h] = shapeBBox(tagName, el);
   if (w == null || h == null)
-    throw new Error('Could not determine the size of the "Nametag Border" <' + (tagName || "?") + "> element.");
+    throw new Error('Could not determine the size of the "' + borderLabel + '" <' + (tagName || "?") + "> element.");
   let stroke = 0;
   const style = getAttr(el, "style") || "";
   const sm = style.match(/stroke-width:\s*([0-9.]+)/);
@@ -308,18 +335,51 @@ function makeTagCopy(xml, row, tokens, index, tx, ty, missing) {
          '" transform="translate(' + fmt(tx) + "," + fmt(ty) + ')">' + body + "</g>";
 }
 
+function sanitizeFilename(v) {
+  return (v || "").replace(/[<>:"/\\|?*\x00-\x1f]/g, "_").trim().replace(/[. ]+$/, "");
+}
+function uniqueName(base, used) {
+  let name = base, n = 2;
+  while (used.has(name.toLowerCase())) { name = base + "-" + n; n++; }
+  used.add(name.toLowerCase());
+  return name;
+}
+function matchFields(tokens, fields) {
+  const templateFields = [...new Set([...tokens.values()])];
+  const headerSet = new Set(fields.map((f) => f.trim().toLowerCase()));
+  const matched = templateFields.filter((f) => headerSet.has(f));
+  const unmatched = templateFields.filter((f) => !headerSet.has(f));
+  return { templateFields, matched, unmatched, headerSet };
+}
+
 function generate(svgText, csvText, opts) {
+  opts = opts || {};
+  const mode = opts.mode || "auto";
+  const tile = findTileGroup(svgText);
+  const resolved = mode === "auto" ? (tile ? "grid" : "individual") : mode;
+  if (resolved === "grid") {
+    if (!tile)
+      throw new Error("Grid mode needs a repeating tile group labelled one of " +
+                      TILE_LABELS.join(", ") + ' (e.g. inkscape:label="Nametag"). ' +
+                      "Use individual mode for whole-page templates.");
+    return generateGrid(svgText, tile, csvText, opts);
+  }
+  return generateIndividual(svgText, csvText, opts);
+}
+
+function generateGrid(svgText, tile, csvText, opts) {
   const gapMm = opts.gapMm ?? 2, marginMm = opts.marginMm ?? 0;
-  const [start, end] = findLabeledGroup(svgText, "Nametag");
+  const { start, end, label: tileLabel } = tile;
   const prefix = svgText.slice(0, start), suffix = svgText.slice(end);
   const nametagXml = svgText.slice(start, end);
+  const borderLabel = tileLabel + " Border";
 
   const tokens = detectPlaceholders(nametagXml);
   if (tokens.size === 0)
-    throw new Error("No {{placeholder}} tokens found inside the nametag group. Add at least one, e.g. {{NAME}}.");
+    throw new Error("No {{placeholder}} tokens found inside the " + tileLabel + " group. Add at least one, e.g. {{NAME}}.");
 
   const { vbW, vbH, uuPerMm } = parsePage(svgText);
-  const { w: tagW, h: tagH, stroke } = parseTagGeometry(nametagXml);
+  const { w: tagW, h: tagH, stroke } = parseTagGeometry(nametagXml, borderLabel);
   const scale = uuPerMm || 1;
   const gap = gapMm * scale, margin = marginMm * scale;
   const { cols, rows, pitchX, pitchY } = computeGrid(vbW, vbH, tagW, tagH, stroke, gap, margin);
@@ -328,17 +388,14 @@ function generate(svgText, csvText, opts) {
   const { fields, rows: dataRows } = parseCSV(csvText);
   if (!dataRows.length) throw new Error("No data rows found in the CSV.");
 
-  const templateFields = [...new Set([...tokens.values()])];
-  const headerSet = new Set(fields.map((f) => f.trim().toLowerCase()));
-  const matched = templateFields.filter((f) => headerSet.has(f));
-  const unmatched = templateFields.filter((f) => !headerSet.has(f));
+  const { templateFields, matched, unmatched } = matchFields(tokens, fields);
   if (!matched.length)
     throw new Error("CSV columns [" + fields.join(", ") + "] do not match any template field [" +
                     templateFields.join(", ") + "].");
 
   const missing = new Set();
   const totalPages = Math.max(1, Math.ceil(dataRows.length / perPage));
-  const sheets = [];
+  const items = [];
   for (let p = 0; p < totalPages; p++) {
     const chunk = dataRows.slice(p * perPage, (p + 1) * perPage);
     let copies = "";
@@ -347,21 +404,62 @@ function generate(svgText, csvText, opts) {
       const tx = margin + col * pitchX, ty = margin + gr * pitchY;
       copies += makeTagCopy(nametagXml, dr, tokens, i, tx, ty, missing);
     });
-    sheets.push({
+    items.push({
       name: p === 0 ? "output.svg" : "output_" + (p + 1) + ".svg",
       svg: prefix + copies + suffix,
+      label: "Sheet " + (p + 1),
       count: chunk.length,
     });
   }
 
   const mmPerUu = uuPerMm ? 1 / uuPerMm : null;
   return {
-    sheets,
+    mode: "grid", items, sheets: items,
     fields: templateFields, matched, unmatched: [...unmatched].sort(), csvColumns: fields,
     grid: { cols, rows }, perPage, records: dataRows.length,
     tagSizeIn: mmPerUu ? [tagW * mmPerUu / 25.4, tagH * mmPerUu / 25.4] : null,
     pageSizeIn: mmPerUu ? [vbW * mmPerUu / 25.4, vbH * mmPerUu / 25.4] : null,
     tagSizeUu: [tagW, tagH], pageSizeUu: [vbW, vbH],
+  };
+}
+
+function generateIndividual(svgText, csvText, opts) {
+  const tokens = detectPlaceholders(svgText);
+  if (tokens.size === 0)
+    throw new Error("No {{placeholder}} tokens found in the template. Add at least one, e.g. {{NAME}}.");
+
+  const { fields, rows: dataRows } = parseCSV(csvText);
+  if (!dataRows.length) throw new Error("No data rows found in the CSV.");
+
+  const { templateFields, matched, unmatched, headerSet } = matchFields(tokens, fields);
+  if (!matched.length)
+    throw new Error("CSV columns [" + fields.join(", ") + "] do not match any template field [" +
+                    templateFields.join(", ") + "].");
+
+  let nameField = (opts.nameField || "").trim().toLowerCase();
+  if (nameField && !headerSet.has(nameField)) nameField = "";
+  if (!nameField) nameField = matched[0];
+
+  const missing = new Set();
+  const used = new Set();
+  const items = [];
+  dataRows.forEach((row, i) => {
+    let body = svgText;
+    for (const [raw, field] of tokens) {
+      let value;
+      if (Object.prototype.hasOwnProperty.call(row, field)) value = row[field];
+      else { missing.add(field); value = ""; }
+      body = body.split(raw).join(xmlEscape(value));
+    }
+    const base = sanitizeFilename(row[nameField] || "") || ("row-" + (i + 1));
+    const name = uniqueName(base, used);
+    items.push({ name: name + ".svg", svg: body, label: name, count: 1 });
+  });
+
+  return {
+    mode: "individual", items, sheets: items,
+    fields: templateFields, matched, unmatched: [...unmatched].sort(), csvColumns: fields,
+    nameField, records: dataRows.length,
   };
 }
 
@@ -387,6 +485,26 @@ Harish Kuthrapali,Committee Chair
 Sharon Parks,Den Leader
 Miguel Santos,Treasurer
 Aiko Tanaka,Secretary`;
+
+// A whole-page template (no tile group) -> individual mode.
+const EXAMPLE_CERT_SVG = `<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<svg xmlns="http://www.w3.org/2000/svg"
+     width="11in" height="8.5in" viewBox="0 0 279.4 215.9" version="1.1">
+  <rect x="0" y="0" width="279.4" height="215.9" fill="#ffffff"/>
+  <rect x="10" y="10" width="259.4" height="195.9" fill="none" stroke="#1b3a6b" stroke-width="2"/>
+  <rect x="14" y="14" width="251.4" height="187.9" fill="none" stroke="#c9a227" stroke-width="0.8"/>
+  <text x="139.7" y="58" text-anchor="middle" font-family="Georgia, serif" font-size="20" fill="#1b3a6b">Certificate of Achievement</text>
+  <text x="139.7" y="84" text-anchor="middle" font-family="sans-serif" font-size="8" fill="#555">This certificate is proudly presented to</text>
+  <text x="139.7" y="116" text-anchor="middle" font-family="Georgia, serif" font-size="30" font-weight="bold" fill="#111">{{Name}}</text>
+  <line x1="79.7" y1="126" x2="199.7" y2="126" stroke="#c9a227" stroke-width="0.6"/>
+  <text x="139.7" y="146" text-anchor="middle" font-family="sans-serif" font-size="11" fill="#1b3a6b">{{Position}}</text>
+  <text x="139.7" y="186" text-anchor="middle" font-family="sans-serif" font-size="7" fill="#777">Awarded with appreciation for outstanding service</text>
+</svg>`;
+
+const EXAMPLE_CERT_CSV = `Name,Position
+John Doe,Course Director
+Jane Smith,Program Lead
+Bob Johnson,Scribe`;
 
 /* ---------------- UI wiring ------------------------------------------------ */
 
@@ -416,56 +534,88 @@ function showMessage(kind, text) {
   el.textContent = text || "";
 }
 
+function updateModeUI(mode) {
+  const indiv = mode === "individual";
+  $("gridOpts").style.display = indiv ? "none" : "";
+  $("indivOpts").style.display = indiv ? "" : "none";
+}
+
+function populateNameField(res) {
+  const sel = $("nameField");
+  const prev = sel.value;
+  const opts = (res.matched.length ? res.matched : res.fields);
+  sel.innerHTML = opts.map((f) => `<option value="${f}">${f}</option>`).join("");
+  sel.value = opts.includes(prev) ? prev : res.nameField;
+}
+
 function run() {
   if (!state.tpl || !state.csv) { return; }
+  const mode = $("mode").value;
   const gapMm = parseFloat($("gap").value) || 0;
   const marginMm = parseFloat($("margin").value) || 0;
+  const nameField = $("nameField").value || null;
   let res;
   try {
-    res = generate(state.tpl, state.csv, { gapMm, marginMm });
+    res = generate(state.tpl, state.csv, { mode, gapMm, marginMm, nameField });
   } catch (err) {
     state.result = null;
     showMessage("err", "⚠ " + err.message);
     $("info").style.display = "none";
     $("dlOneBtn").disabled = true; $("dlAllBtn").disabled = true;
     $("sheetSelect").style.display = "none";
+    updateModeUI(mode);
     return;
   }
   state.result = res; state.current = 0;
+  updateModeUI(res.mode);
+  if (res.mode === "individual") populateNameField(res);
   if (res.unmatched.length)
     showMessage("warn", "Template fields with no CSV column (left blank): " + res.unmatched.join(", "));
   else
     showMessage("", "");
   renderInfo(res);
-  renderSheetSelect(res);
+  renderItemSelect(res);
   renderPreview();
   $("dlOneBtn").disabled = false; $("dlAllBtn").disabled = false;
 }
 
 function renderInfo(res) {
   const info = $("info");
-  const tag = res.tagSizeIn ? res.tagSizeIn.map((v) => v.toFixed(2) + "in").join(" × ")
-                            : res.tagSizeUu.map((v) => (+v.toFixed(2)) + "uu").join(" × ");
-  const bed = res.pageSizeIn ? res.pageSizeIn.map((v) => v.toFixed(2) + "in").join(" × ")
-                            : res.pageSizeUu.map((v) => (+v.toFixed(2)) + "uu").join(" × ");
   const fieldPills = res.fields.map((f) =>
     `<span class="pill ${res.matched.includes(f) ? "ok" : "warn"}">${f}${res.matched.includes(f) ? "" : " ✕"}</span>`
   ).join("");
   info.style.display = "block";
-  info.innerHTML =
-    `<div class="line"><span class="k">Bed</span><span class="v">${bed}</span></div>` +
-    `<div class="line"><span class="k">Tag</span><span class="v">${tag}</span></div>` +
-    `<div class="line"><span class="k">Grid</span><span class="v">${res.grid.cols} × ${res.grid.rows} = ${res.perPage}/sheet</span></div>` +
-    `<div class="line"><span class="k">Records</span><span class="v">${res.records} → ${res.sheets.length} sheet(s)</span></div>` +
-    `<div class="line"><span class="k">Fields</span><span class="v">${fieldPills}</span></div>`;
+  if (res.mode === "grid") {
+    const tag = res.tagSizeIn ? res.tagSizeIn.map((v) => v.toFixed(2) + "in").join(" × ")
+                              : res.tagSizeUu.map((v) => (+v.toFixed(2)) + "uu").join(" × ");
+    const bed = res.pageSizeIn ? res.pageSizeIn.map((v) => v.toFixed(2) + "in").join(" × ")
+                              : res.pageSizeUu.map((v) => (+v.toFixed(2)) + "uu").join(" × ");
+    info.innerHTML =
+      `<div class="line"><span class="k">Bed</span><span class="v">${bed}</span></div>` +
+      `<div class="line"><span class="k">Tile</span><span class="v">${tag}</span></div>` +
+      `<div class="line"><span class="k">Grid</span><span class="v">${res.grid.cols} × ${res.grid.rows} = ${res.perPage}/sheet</span></div>` +
+      `<div class="line"><span class="k">Records</span><span class="v">${res.records} → ${res.items.length} sheet(s)</span></div>` +
+      `<div class="line"><span class="k">Fields</span><span class="v">${fieldPills}</span></div>`;
+  } else {
+    info.innerHTML =
+      `<div class="line"><span class="k">Mode</span><span class="v">Individual — one file per row</span></div>` +
+      `<div class="line"><span class="k">Records</span><span class="v">${res.records} → ${res.items.length} file(s)</span></div>` +
+      `<div class="line"><span class="k">Name by</span><span class="v">${res.nameField}</span></div>` +
+      `<div class="line"><span class="k">Fields</span><span class="v">${fieldPills}</span></div>`;
+  }
 }
 
-function renderSheetSelect(res) {
+function renderItemSelect(res) {
   const sel = $("sheetSelect");
-  if (res.sheets.length <= 1) { sel.style.display = "none"; return; }
+  if (res.items.length <= 1) { sel.style.display = "none"; return; }
   sel.style.display = "";
-  sel.innerHTML = res.sheets.map((s, i) =>
-    `<option value="${i}">Sheet ${i + 1} / ${res.sheets.length} — ${s.count} tags</option>`).join("");
+  const total = res.items.length;
+  sel.innerHTML = res.items.map((it, i) => {
+    const txt = res.mode === "grid"
+      ? `Sheet ${i + 1} / ${total} — ${it.count} tags`
+      : `${i + 1} / ${total} — ${it.label}`;
+    return `<option value="${i}">${txt}</option>`;
+  }).join("");
   sel.value = String(state.current);
 }
 
@@ -473,10 +623,10 @@ function renderPreview() {
   const stage = $("stage");
   const res = state.result;
   if (!res) { stage.innerHTML = '<div class="empty">Nothing to preview yet.</div>'; return; }
-  const sheet = res.sheets[state.current];
+  const item = res.items[state.current];
   const wrap = document.createElement("div");
   wrap.className = "sheet";
-  wrap.innerHTML = sheet.svg;
+  wrap.innerHTML = item.svg;
   const svg = wrap.querySelector("svg");
   if (svg) {
     svg.removeAttribute("width");
@@ -486,35 +636,80 @@ function renderPreview() {
   stage.innerHTML = "";
   stage.appendChild(wrap);
   const a = $("dlOne");
-  a.href = URL.createObjectURL(new Blob([sheet.svg], { type: "image/svg+xml" }));
-  a.download = sheet.name;
+  a.href = URL.createObjectURL(new Blob([item.svg], { type: "image/svg+xml" }));
+  a.download = item.name;
+}
+
+/* store-only ZIP writer (no dependencies) */
+function crc32(bytes) {
+  let c = ~0;
+  for (let i = 0; i < bytes.length; i++) {
+    c ^= bytes[i];
+    for (let k = 0; k < 8; k++) c = (c >>> 1) ^ (0xEDB88320 & -(c & 1));
+  }
+  return ~c >>> 0;
+}
+function buildZip(files) {
+  const enc = new TextEncoder();
+  const u16 = (n) => [n & 255, (n >>> 8) & 255];
+  const u32 = (n) => [n & 255, (n >>> 8) & 255, (n >>> 16) & 255, (n >>> 24) & 255];
+  const parts = [], central = [];
+  let offset = 0;
+  for (const f of files) {
+    const nameBytes = enc.encode(f.name);
+    const data = enc.encode(f.svg);
+    const crc = crc32(data);
+    const local = Uint8Array.from([].concat(
+      u32(0x04034b50), u16(20), u16(0x0800), u16(0), u16(0), u16(0),
+      u32(crc), u32(data.length), u32(data.length), u16(nameBytes.length), u16(0)));
+    parts.push(local, nameBytes, data);
+    const cen = Uint8Array.from([].concat(
+      u32(0x02014b50), u16(20), u16(20), u16(0x0800), u16(0), u16(0), u16(0),
+      u32(crc), u32(data.length), u32(data.length), u16(nameBytes.length),
+      u16(0), u16(0), u16(0), u16(0), u32(0), u32(offset)));
+    central.push(cen, nameBytes);
+    offset += local.length + nameBytes.length + data.length;
+  }
+  let centralSize = 0;
+  central.forEach((c) => { centralSize += c.length; });
+  const eocd = Uint8Array.from([].concat(
+    u32(0x06054b50), u16(0), u16(0), u16(files.length), u16(files.length),
+    u32(centralSize), u32(offset), u16(0)));
+  return new Blob([...parts, ...central, eocd], { type: "application/zip" });
 }
 
 function downloadAll() {
   if (!state.result) return;
-  state.result.sheets.forEach((s, i) => {
-    setTimeout(() => {
-      const a = document.createElement("a");
-      a.href = URL.createObjectURL(new Blob([s.svg], { type: "image/svg+xml" }));
-      a.download = s.name;
-      document.body.appendChild(a); a.click(); a.remove();
-    }, i * 200);
-  });
+  const blob = buildZip(state.result.items.map((it) => ({ name: it.name, svg: it.svg })));
+  const zipName = state.result.mode === "grid" ? "grid-sheets.zip" : "certificates.zip";
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = zipName;
+  document.body.appendChild(a); a.click(); a.remove();
 }
 
 wireDrop("tplDrop", "tplInput", (t) => { state.tpl = t; }, "tplName");
 wireDrop("csvDrop", "csvInput", (t) => { state.csv = t; }, "csvName");
 $("gap").addEventListener("input", run);
 $("margin").addEventListener("input", run);
+$("mode").addEventListener("change", () => { updateModeUI($("mode").value); run(); });
+$("nameField").addEventListener("change", run);
 $("genBtn").addEventListener("click", run);
 $("sheetSelect").addEventListener("change", (e) => { state.current = parseInt(e.target.value, 10); renderPreview(); });
 $("dlAllBtn").addEventListener("click", downloadAll);
 $("exampleBtn").addEventListener("click", () => {
-  state.tpl = EXAMPLE_SVG; state.csv = EXAMPLE_CSV;
-  $("tplName").textContent = "example-classic-badge.svg";
-  $("csvName").textContent = "example-names.csv";
+  if ($("mode").value === "individual") {
+    state.tpl = EXAMPLE_CERT_SVG; state.csv = EXAMPLE_CERT_CSV;
+    $("tplName").textContent = "example-certificate.svg";
+    $("csvName").textContent = "example-certificate.csv";
+  } else {
+    state.tpl = EXAMPLE_SVG; state.csv = EXAMPLE_CSV;
+    $("tplName").textContent = "example-classic-badge.svg";
+    $("csvName").textContent = "example-names.csv";
+  }
   run();
 });
+updateModeUI($("mode").value);
 </script>
 </body>
 </html>

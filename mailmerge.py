@@ -1,16 +1,29 @@
-"""Nametag grid mail-merge for laser cutting.
+"""SVG mail merge with two output layouts.
 
-Reads a list of names from a CSV and performs a "mail merge" against an SVG
-template that contains a single nametag with a ``{{NAME}}`` placeholder. The
-nametags are tiled into a grid sized to fit the bed of a Glowforge Pro
-(19.5in x 11in), with a small gap between tags so each one is cut separately.
+Performs a "mail merge" of rows from a CSV onto an SVG template whose artwork
+contains ``{{TOKEN}}`` placeholders. Every distinct token is auto-detected and
+matched to a CSV column of the same name (case-insensitive, any order), so a
+template declares the fields it needs and any matching CSV merges in.
+
+Two output modes:
+
+- ``grid`` -- the template carries a single repeating tile (a ``<g>`` labelled
+  ``Nametag``/``Tile``/``Cell`` containing a ``... Border`` cut shape). The tile
+  is copied once per row and tiled into a grid sized to fit a laser bed
+  (e.g. a Glowforge Pro, 19.5in x 11in) with a small gap between cuts. Ideal for
+  nametags, labels and other many-up cut sheets.
+- ``individual`` -- the whole template page is one document (a certificate,
+  diploma, badge, ...). One output SVG is written per CSV row.
+
+``auto`` (the default) picks ``grid`` when the template has a recognised tile
+group, otherwise ``individual``.
 
 Design goals:
-- Keep the template SVG as intact as possible. The nametag artwork is copied
-  verbatim from the template (the raw XML is sliced out as text rather than
-  being re-serialized), so fonts, the logo, the ruler and the cut border are
-  preserved byte-for-byte. The only changes are the substituted name, made-unique
-  element ids, and a wrapping ``translate()`` group that positions each copy.
+- Keep the template SVG as intact as possible. Artwork is copied verbatim from
+  the template (the raw XML is sliced out as text rather than re-serialized), so
+  fonts, logos, embedded images and cut borders are preserved byte-for-byte.
+  The only changes are the substituted values and, in grid mode, made-unique
+  element ids plus a wrapping ``translate()`` group per copy.
 - No third-party dependencies -- standard library only.
 """
 
@@ -27,8 +40,10 @@ import sys
 # found in the template is matched to a CSV column of the same name, so a
 # template defines which fields it needs and any matching CSV merges into it.
 PLACEHOLDER_RE = re.compile(r"\{\{\s*([^{}]+?)\s*\}\}")
-NAMETAG_LABEL = "Nametag"
-BORDER_LABEL = "Nametag Border"
+
+# Grid mode looks for a single repeating tile group carrying one of these
+# Inkscape labels; its cut outline is the same label followed by " Border".
+TILE_LABELS = ("Nametag", "Tile", "Cell")
 
 MM_PER_INCH = 25.4
 
@@ -115,6 +130,22 @@ def find_labeled_group(svg_text, label):
             pos = gt + 1
 
 
+def find_tile_group(svg_text):
+    """Find the first recognised repeating-tile group.
+
+    Returns ``(start, end, label)`` for the ``<g>`` whose ``inkscape:label`` is
+    one of ``TILE_LABELS``, or ``None`` when the template has no tile group (in
+    which case the template is treated as a single per-record document)."""
+    for label in TILE_LABELS:
+        if f'inkscape:label="{label}"' in svg_text:
+            try:
+                start, end = find_labeled_group(svg_text, label)
+            except ValueError:
+                continue
+            return start, end, label
+    return None
+
+
 def get_attr(tag_text, name):
     """Read a single attribute value out of an element's opening-tag text."""
     m = re.search(rf'{re.escape(name)}="([^"]*)"', tag_text)
@@ -166,23 +197,23 @@ def _scale_from_dimension(dim_value, viewbox_extent):
     return viewbox_extent / physical_mm
 
 
-def parse_tag_geometry(nametag_xml):
-    """Return (width, height, stroke) of the element labelled ``Nametag Border``,
+def parse_tag_geometry(nametag_xml, border_label):
+    """Return (width, height, stroke) of the element labelled ``<border_label>``,
     in the template's user units (the same space as the viewBox and transforms).
 
     The border may be any of ``rect``, ``circle``, ``ellipse``, ``polygon`` or
-    ``polyline``, so nametags can be any shape; the width/height returned are the
+    ``polyline``, so tiles can be any shape; the width/height returned are the
     shape's bounding box, which is what the grid tiles on."""
-    border_pos = nametag_xml.find(f'inkscape:label="{BORDER_LABEL}"')
+    border_pos = nametag_xml.find(f'inkscape:label="{border_label}"')
     if border_pos == -1:
         raise ValueError(
-            f'Could not find an element with inkscape:label="{BORDER_LABEL}" '
-            "in the nametag group."
+            f'Could not find an element with inkscape:label="{border_label}" '
+            "in the tile group."
         )
     el_start = nametag_xml.rfind("<", 0, border_pos)
     el_end = nametag_xml.find(">", border_pos)
     if el_start == -1 or el_end == -1:
-        raise ValueError(f'Malformed "{BORDER_LABEL}" element in the template.')
+        raise ValueError(f'Malformed "{border_label}" element in the template.')
     el = nametag_xml[el_start:el_end + 1]
 
     name_match = re.match(r"<\s*([A-Za-z0-9:]+)", el)
@@ -191,7 +222,7 @@ def parse_tag_geometry(nametag_xml):
     width, height = _shape_bbox(tag_name, el)
     if width is None or height is None:
         raise ValueError(
-            f'Could not determine the size of the "{BORDER_LABEL}" '
+            f'Could not determine the size of the "{border_label}" '
             f"<{tag_name or '?'}> element."
         )
 
@@ -318,24 +349,78 @@ def page_filename(output_path, page_number):
     return f"{stem}_{page_number}{ext}"
 
 
-def generate(template_path, names_csv_path, output_path, gap=2.0, margin=0.0):
+_UNSAFE_FILENAME = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
+
+
+def sanitize_filename(value):
+    """Turn an arbitrary field value into a safe file name (no extension)."""
+    cleaned = _UNSAFE_FILENAME.sub("_", value or "").strip().rstrip(". ")
+    return cleaned
+
+
+def unique_name(base, used):
+    """Return ``base`` (or ``base-2``, ``base-3`` ...) not already in ``used``,
+    and record the result in ``used``."""
+    name = base
+    n = 2
+    while name.lower() in used:
+        name = f"{base}-{n}"
+        n += 1
+    used.add(name.lower())
+    return name
+
+
+def match_fields(tokens, fieldnames):
+    """Given detected placeholder tokens and CSV field names, return
+    ``(template_fields, matched, unmatched, header_set)``."""
+    template_fields = list(dict.fromkeys(tokens.values()))
+    header_set = {f.strip().lower() for f in fieldnames}
+    matched = [f for f in template_fields if f in header_set]
+    unmatched = [f for f in template_fields if f not in header_set]
+    return template_fields, matched, unmatched, header_set
+
+
+def generate(template_path, names_csv_path, output_path="output.svg", mode="auto",
+             gap=2.0, margin=0.0, out_dir="output", name_field=None):
+    """Dispatch to the grid or individual generator.
+
+    ``mode`` is ``"auto"`` (choose based on whether the template has a tile
+    group), ``"grid"`` or ``"individual"``."""
     with open(template_path, encoding="utf-8") as fh:
         svg_text = fh.read()
 
-    start, end = find_labeled_group(svg_text, NAMETAG_LABEL)
+    tile = find_tile_group(svg_text)
+    resolved = mode
+    if mode == "auto":
+        resolved = "grid" if tile else "individual"
+
+    if resolved == "grid":
+        if tile is None:
+            raise ValueError(
+                "grid mode needs a repeating tile group labelled one of "
+                f"{', '.join(TILE_LABELS)} (e.g. inkscape:label=\"Nametag\"). "
+                "Use individual mode for whole-page templates."
+            )
+        return generate_grid(svg_text, tile, names_csv_path, output_path, gap, margin)
+    return generate_individual(svg_text, names_csv_path, out_dir, name_field)
+
+
+def generate_grid(svg_text, tile, names_csv_path, output_path, gap=2.0, margin=0.0):
+    start, end, tile_label = tile
     prefix = svg_text[:start]
     suffix = svg_text[end:]
     nametag_xml = svg_text[start:end]
+    border_label = f"{tile_label} Border"
 
     tokens = detect_placeholders(nametag_xml)
     if not tokens:
         raise ValueError(
-            "No {{placeholder}} tokens found inside the nametag group. "
+            f"No {{{{placeholder}}}} tokens found inside the {tile_label} group. "
             "Add at least one, e.g. {{NAME}}."
         )
 
     page_w, page_h, uu_per_mm = parse_page(svg_text)
-    tag_w, tag_h, stroke = parse_tag_geometry(nametag_xml)
+    tag_w, tag_h, stroke = parse_tag_geometry(nametag_xml, border_label)
 
     # ``gap`` and ``margin`` arrive in millimetres; convert them into the
     # template's user units so spacing is physically correct on any template.
@@ -353,10 +438,7 @@ def generate(template_path, names_csv_path, output_path, gap=2.0, margin=0.0):
     if not data_rows:
         raise ValueError(f"No data rows found in {names_csv_path}.")
 
-    template_fields = list(dict.fromkeys(tokens.values()))
-    header_set = {f.strip().lower() for f in fieldnames}
-    matched = [f for f in template_fields if f in header_set]
-    unmatched = [f for f in template_fields if f not in header_set]
+    template_fields, matched, unmatched, _ = match_fields(tokens, fieldnames)
     if not matched:
         raise ValueError(
             f"CSV {names_csv_path} has no columns matching the template "
@@ -393,6 +475,8 @@ def generate(template_path, names_csv_path, output_path, gap=2.0, margin=0.0):
         tag_size_in = None
 
     return {
+        "mode": "grid",
+        "tile_label": tile_label,
         "fields": template_fields,
         "matched": matched,
         "unmatched": sorted(unmatched),
@@ -408,44 +492,131 @@ def generate(template_path, names_csv_path, output_path, gap=2.0, margin=0.0):
     }
 
 
+def generate_individual(svg_text, names_csv_path, out_dir="output", name_field=None):
+    """Write one output SVG per CSV row: the whole template page with its
+    ``{{token}}`` placeholders merged. The template is reproduced byte-for-byte
+    apart from the substituted values."""
+    tokens = detect_placeholders(svg_text)
+    if not tokens:
+        raise ValueError(
+            "No {{placeholder}} tokens found in the template. "
+            "Add at least one, e.g. {{NAME}}."
+        )
+
+    fieldnames, data_rows = read_rows(names_csv_path)
+    if not data_rows:
+        raise ValueError(f"No data rows found in {names_csv_path}.")
+
+    template_fields, matched, unmatched, header_set = match_fields(tokens, fieldnames)
+    if not matched:
+        raise ValueError(
+            f"CSV {names_csv_path} has no columns matching the template "
+            f"placeholders {template_fields}. CSV columns: {fieldnames}."
+        )
+
+    # Pick which column names each output file. Default to the first matched
+    # template field; fall back to a row number when the value is blank.
+    nf = (name_field or "").strip().lower()
+    if nf and nf not in header_set:
+        raise ValueError(
+            f"--name-field {name_field!r} is not a CSV column. "
+            f"Available columns: {fieldnames}."
+        )
+    if not nf:
+        nf = matched[0]
+
+    os.makedirs(out_dir, exist_ok=True)
+    missing = set()
+    used = set()
+    written = []
+    for i, row in enumerate(data_rows):
+        body = svg_text
+        for raw, field in tokens.items():
+            if field in row:
+                value = row[field]
+            else:
+                missing.add(field)
+                value = ""
+            body = body.replace(raw, xml_escape_text(value))
+
+        base = sanitize_filename(row.get(nf, "")) or f"row-{i + 1}"
+        out_name = os.path.join(out_dir, unique_name(base, used) + ".svg")
+        with open(out_name, "w", encoding="utf-8") as fh:
+            fh.write(body)
+        written.append((out_name, 1))
+
+    return {
+        "mode": "individual",
+        "fields": template_fields,
+        "matched": matched,
+        "unmatched": sorted(unmatched),
+        "csv_columns": fieldnames,
+        "name_field": nf,
+        "out_dir": out_dir,
+        "names": len(data_rows),
+        "files": written,
+    }
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(
-        description="Mail-merge names from a CSV onto an SVG nametag template, "
-                    "tiled into a Glowforge-ready grid."
+        description="Mail-merge rows from a CSV onto an SVG template. Either tile "
+                    "a repeating nametag/label into a laser-ready grid, or emit "
+                    "one full-page SVG per row (certificates, badges, ...)."
     )
     parser.add_argument("--template", default="template.svg", help="Template SVG (default: template.svg)")
     parser.add_argument("--names", default="names.csv", help="CSV of merge data (default: names.csv)")
-    parser.add_argument("--output", default="output.svg", help="Output SVG (default: output.svg)")
-    parser.add_argument("--gap", type=float, default=2.0, help="Gap between nametags in mm (default: 2.0)")
-    parser.add_argument("--margin", type=float, default=0.0, help="Margin around the grid in mm (default: 0.0)")
+    parser.add_argument("--mode", choices=("auto", "grid", "individual"), default="auto",
+                        help="Output layout: grid (tiled), individual (one file per row), "
+                             "or auto-detect (default: auto)")
+    parser.add_argument("--output", default="output.svg",
+                        help="[grid] Output SVG; extra sheets get _2, _3 suffixes (default: output.svg)")
+    parser.add_argument("--out-dir", default="output",
+                        help="[individual] Directory for the per-row SVGs (default: output)")
+    parser.add_argument("--name-field", default=None,
+                        help="[individual] CSV column used to name each output file "
+                             "(default: the template's first field)")
+    parser.add_argument("--gap", type=float, default=2.0, help="[grid] Gap between tiles in mm (default: 2.0)")
+    parser.add_argument("--margin", type=float, default=0.0, help="[grid] Margin around the grid in mm (default: 0.0)")
     args = parser.parse_args(argv)
 
     try:
         result = generate(
-            args.template, args.names, args.output,
+            args.template, args.names, args.output, mode=args.mode,
             gap=args.gap, margin=args.margin,
+            out_dir=args.out_dir, name_field=args.name_field,
         )
     except (ValueError, FileNotFoundError) as exc:
         print(f"Error: {exc}", file=sys.stderr)
         return 1
 
-    cols, rows = result["grid"]
-    if result["page_size_in"] and result["tag_size_in"]:
-        pw, ph = result["page_size_in"]
-        tw, th = result["tag_size_in"]
-        print(f"Bed: {pw:.2f}in x {ph:.2f}in   Tag: {tw:.2f}in x {th:.2f}in")
-    else:
-        pw, ph = result["page_size_uu"]
-        tw, th = result["tag_size_uu"]
-        print(f"Bed: {pw:g} x {ph:g} (user units)   Tag: {tw:g} x {th:g} (user units)")
     print(f"Fields: {', '.join(result['fields'])}  (matched CSV columns: {', '.join(result['matched'])})")
     if result["unmatched"]:
         print(f"WARNING: template fields with no CSV column (left blank): "
               f"{', '.join(result['unmatched'])}", file=sys.stderr)
-    print(f"Grid: {cols} cols x {rows} rows = {result['per_page']} tags/sheet")
-    print(f"Records: {result['names']}  ->  {len(result['files'])} sheet(s)")
-    for name, count in result["files"]:
-        print(f"  {name}: {count} tag(s)")
+
+    if result["mode"] == "grid":
+        cols, rows = result["grid"]
+        if result["page_size_in"] and result["tag_size_in"]:
+            pw, ph = result["page_size_in"]
+            tw, th = result["tag_size_in"]
+            print(f"Bed: {pw:.2f}in x {ph:.2f}in   Tile: {tw:.2f}in x {th:.2f}in")
+        else:
+            pw, ph = result["page_size_uu"]
+            tw, th = result["tag_size_uu"]
+            print(f"Bed: {pw:g} x {ph:g} (user units)   Tile: {tw:g} x {th:g} (user units)")
+        print(f"Grid: {cols} cols x {rows} rows = {result['per_page']} per sheet")
+        print(f"Records: {result['names']}  ->  {len(result['files'])} sheet(s)")
+        for name, count in result["files"]:
+            print(f"  {name}: {count} tile(s)")
+    else:
+        print(f"Mode: individual  (file name from '{result['name_field']}')")
+        print(f"Records: {result['names']}  ->  {len(result['files'])} file(s) in {result['out_dir']}/")
+        shown = result["files"][:10]
+        for name, _ in shown:
+            print(f"  {name}")
+        if len(result["files"]) > len(shown):
+            print(f"  ... and {len(result['files']) - len(shown)} more")
     return 0
 
 
