@@ -74,6 +74,25 @@
   a.dl { text-decoration: none; }
   footer { max-width: 1100px; margin: 0 auto; padding: 0 20px 40px; color: var(--muted); font-size: 12px; }
   code { background: var(--panel2); padding: 1px 5px; border-radius: 5px; font-size: 12px; }
+  .data-panel { grid-column: 1 / -1; }
+  #dataCount { color: var(--muted); font-size: 12px; font-weight: 400; text-transform: none; letter-spacing: 0; margin-left: 8px; }
+  .data-toolbar { display: flex; gap: 8px; flex-wrap: wrap; }
+  .data-wrap { overflow: auto; border: 1px solid var(--line); border-radius: 8px; max-height: 380px; }
+  table.data { border-collapse: collapse; width: 100%; font-size: 13px; }
+  table.data th, table.data td { border-bottom: 1px solid var(--line); border-right: 1px solid var(--line); }
+  table.data thead th { position: sticky; top: 0; z-index: 1; background: var(--panel2); }
+  .colhead { display: flex; align-items: center; gap: 2px; padding: 2px 4px; border-left: 2px solid transparent; }
+  .colhead.matched { border-left-color: var(--ok); }
+  .colhead.unmatched { border-left-color: var(--warn); }
+  .colhead input { border: none; background: transparent; color: var(--text); font-weight: 600; width: 100%; padding: 5px 4px; font-size: 12px; min-width: 84px; }
+  table.data td input { border: none; background: transparent; color: var(--text); width: 100%; padding: 6px 8px; font-size: 13px; min-width: 96px; }
+  table.data td input:focus, .colhead input:focus { outline: 2px solid var(--accent); outline-offset: -2px; border-radius: 4px; }
+  .idxcol { color: var(--muted); text-align: center; width: 36px; min-width: 36px; font-variant-numeric: tabular-nums; }
+  th.actcol, td.actcol { width: 32px; text-align: center; }
+  .rowdel, .coldel { background: transparent; border: none; color: var(--muted); cursor: pointer; font-weight: 700; padding: 2px 6px; font-size: 12px; line-height: 1; }
+  .rowdel:hover, .coldel:hover { color: var(--err); }
+  .data-empty { color: var(--muted); font-size: 13px; padding: 18px 12px; text-align: center; }
+  .data-empty strong { color: var(--accent); }
 </style>
 </head>
 <body>
@@ -149,8 +168,21 @@
     <div class="info" id="info" style="display:none; margin-bottom:14px;"></div>
 
     <div class="stage" id="stage">
-      <div class="empty">Load a template and a CSV (or click <strong>Load example</strong>) to get started.</div>
+      <div class="empty">Load a template (or click <strong>Load example</strong>), then add data rows below to get started.</div>
     </div>
+  </div>
+
+  <div class="panel data-panel">
+    <div class="preview-head" style="margin-bottom:10px">
+      <h2 style="margin:0">Data<span id="dataCount"></span></h2>
+      <div class="data-toolbar">
+        <button id="useTplFieldsBtn" class="ghost" disabled>Use template fields</button>
+        <button id="addColBtn" class="ghost">+ Column</button>
+        <button id="addRowBtn" class="ghost" disabled>+ Row</button>
+        <button id="clearRowsBtn" class="ghost" disabled>Clear rows</button>
+      </div>
+    </div>
+    <div id="dataArea"></div>
   </div>
 </main>
 <footer>
@@ -508,7 +540,7 @@ Bob Johnson,Scribe`;
 
 /* ---------------- UI wiring ------------------------------------------------ */
 
-const state = { tpl: null, csv: null, result: null, current: 0 };
+const state = { tpl: null, data: { columns: [], rows: [] }, result: null, current: 0 };
 const $ = (id) => document.getElementById(id);
 
 function wireDrop(dropId, inputId, onLoad, nameId) {
@@ -548,15 +580,236 @@ function populateNameField(res) {
   sel.value = opts.includes(prev) ? prev : res.nameField;
 }
 
+/* ---------------- data table (in-memory CRUD) ----------------------------- */
+/* The data lives only in memory (state.data). Editing it never touches any
+   uploaded file; generation reads from this model, so you can upload a CSV,
+   load the example, or build a table from scratch with no file at all. */
+
+function templateFieldNames(svg) {
+  const re = /\{\{\s*([^{}]+?)\s*\}\}/g;
+  const seen = new Map();
+  let m;
+  while ((m = re.exec(svg))) {
+    const disp = m[1].trim(), key = disp.toLowerCase();
+    if (!seen.has(key)) seen.set(key, disp);
+  }
+  return [...seen.values()];
+}
+
+function csvCell(v) {
+  v = v == null ? "" : String(v);
+  return /[",\n\r]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v;
+}
+function dataToCsv(model) {
+  const head = model.columns.map(csvCell).join(",");
+  if (!model.rows.length) return head;
+  const body = model.rows
+    .map((r) => model.columns.map((_, i) => csvCell(r[i] || "")).join(","))
+    .join("\n");
+  return head + "\n" + body;
+}
+
+function parseCsvRaw(text) {
+  text = text.replace(/^\uFEFF/, "");
+  const rows = [];
+  let field = "", row = [], inQ = false, i = 0;
+  while (i < text.length) {
+    const c = text[i];
+    if (inQ) {
+      if (c === '"') { if (text[i + 1] === '"') { field += '"'; i += 2; continue; } inQ = false; i++; continue; }
+      field += c; i++; continue;
+    }
+    if (c === '"') { inQ = true; i++; continue; }
+    if (c === ",") { row.push(field); field = ""; i++; continue; }
+    if (c === "\r") { i++; continue; }
+    if (c === "\n") { row.push(field); rows.push(row); row = []; field = ""; i++; continue; }
+    field += c; i++;
+  }
+  if (field.length > 0 || row.length > 0) { row.push(field); rows.push(row); }
+  return rows;
+}
+function loadCsvIntoModel(text) {
+  const raw = parseCsvRaw(text);
+  if (!raw.length) { state.data = { columns: [], rows: [] }; return; }
+  const columns = raw[0].map((s) => s.trim());
+  const rows = [];
+  for (let r = 1; r < raw.length; r++) {
+    const arr = columns.map((_, c) => (raw[r][c] == null ? "" : String(raw[r][c])));
+    if (arr.some((v) => v.trim() !== "")) rows.push(arr);
+  }
+  state.data = { columns, rows };
+}
+
+function maybeInitColumnsFromTemplate() {
+  if (!state.tpl || state.data.columns.length) return;
+  const cols = templateFieldNames(state.tpl);
+  if (!cols.length) return;
+  state.data.columns = cols;
+  if (!state.data.rows.length) state.data.rows.push(cols.map(() => ""));
+}
+
+function focusCell(sel) {
+  const el = document.querySelector(sel);
+  if (el) { el.focus(); if (el.select) el.select(); }
+}
+
+function addRow() {
+  if (!state.data.columns.length) return;
+  state.data.rows.push(state.data.columns.map(() => ""));
+  run();
+  focusCell("#dataArea tbody tr:last-child td:not(.idxcol) input");
+}
+function addColumn() {
+  const used = new Set(state.data.columns.map((c) => c.toLowerCase()));
+  let name = "";
+  if (state.tpl) {
+    const tf = templateFieldNames(state.tpl).find((f) => !used.has(f.toLowerCase()));
+    if (tf) name = tf;
+  }
+  if (!name) {
+    let n = state.data.columns.length + 1;
+    name = "Column " + n;
+    while (used.has(name.toLowerCase())) { n++; name = "Column " + n; }
+  }
+  state.data.columns.push(name);
+  if (!state.data.rows.length) state.data.rows.push(state.data.columns.map(() => ""));
+  else state.data.rows.forEach((r) => r.push(""));
+  run();
+  focusCell('#dataArea thead input[data-col="' + (state.data.columns.length - 1) + '"]');
+}
+function useTemplateFields() {
+  if (!state.tpl) return;
+  const used = new Set(state.data.columns.map((c) => c.toLowerCase()));
+  templateFieldNames(state.tpl).forEach((f) => {
+    if (!used.has(f.toLowerCase())) {
+      state.data.columns.push(f);
+      state.data.rows.forEach((r) => r.push(""));
+      used.add(f.toLowerCase());
+    }
+  });
+  if (state.data.columns.length && !state.data.rows.length)
+    state.data.rows.push(state.data.columns.map(() => ""));
+  run();
+}
+function clearRows() { state.data.rows = []; run(); }
+function deleteRow(i) { state.data.rows.splice(i, 1); run(); }
+function deleteColumn(c) {
+  state.data.columns.splice(c, 1);
+  state.data.rows.forEach((r) => r.splice(c, 1));
+  run();
+}
+
+function syncDataButtons() {
+  const hasCols = state.data.columns.length > 0;
+  const hasRows = state.data.rows.length > 0;
+  const tplFields = state.tpl ? templateFieldNames(state.tpl) : [];
+  const used = new Set(state.data.columns.map((c) => c.toLowerCase()));
+  const missingTpl = tplFields.some((f) => !used.has(f.toLowerCase()));
+  $("addRowBtn").disabled = !hasCols;
+  $("clearRowsBtn").disabled = !hasRows;
+  $("useTplFieldsBtn").disabled = !missingTpl;
+}
+
+function renderDataEditor() {
+  const area = $("dataArea");
+  const { columns, rows } = state.data;
+  const count = $("dataCount");
+  count.textContent = columns.length
+    ? `(${rows.length} row${rows.length === 1 ? "" : "s"} × ${columns.length} col${columns.length === 1 ? "" : "s"})`
+    : "";
+
+  const tplSet = new Set(state.tpl ? templateFieldNames(state.tpl).map((f) => f.toLowerCase()) : []);
+  const esc = (s) => String(s == null ? "" : s)
+    .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+
+  if (!columns.length) {
+    area.innerHTML =
+      '<div class="data-empty">No data yet. Click <strong>+ Column</strong> to start a table' +
+      (tplSet.size ? ', or <strong>Use template fields</strong> to add the template’s placeholders' : "") +
+      ', then <strong>+ Row</strong> to add records — no CSV file needed.</div>';
+    syncDataButtons();
+    return;
+  }
+
+  let thead = '<tr><th class="idxcol"></th>';
+  columns.forEach((c, ci) => {
+    const cls = tplSet.has(String(c).toLowerCase()) ? "matched" : (tplSet.size ? "unmatched" : "");
+    thead += '<th><div class="colhead ' + cls + '">' +
+      '<input data-col="' + ci + '" value="' + esc(c) + '" placeholder="column" spellcheck="false">' +
+      '<button class="coldel" data-col="' + ci + '" title="Delete column">✕</button></div></th>';
+  });
+  thead += '<th class="actcol"></th></tr>';
+
+  let tbody = "";
+  rows.forEach((r, ri) => {
+    tbody += '<tr><td class="idxcol">' + (ri + 1) + "</td>";
+    columns.forEach((_, ci) => {
+      tbody += '<td><input data-row="' + ri + '" data-cell="' + ci + '" value="' + esc(r[ci] || "") + '" spellcheck="false"></td>';
+    });
+    tbody += '<td class="actcol"><button class="rowdel" data-row="' + ri + '" title="Delete row">✕</button></td></tr>';
+  });
+
+  area.innerHTML = '<div class="data-wrap"><table class="data"><thead>' +
+    thead + "</thead><tbody>" + tbody + "</tbody></table></div>";
+
+  area.querySelectorAll("tbody input").forEach((inp) => {
+    inp.addEventListener("input", () => {
+      state.data.rows[+inp.dataset.row][+inp.dataset.cell] = inp.value;
+      regenerate();
+    });
+  });
+  area.querySelectorAll("thead input").forEach((inp) => {
+    inp.addEventListener("input", () => {
+      state.data.columns[+inp.dataset.col] = inp.value;
+      regenerate();
+    });
+  });
+  area.querySelectorAll(".rowdel").forEach((b) =>
+    b.addEventListener("click", () => deleteRow(+b.dataset.row)));
+  area.querySelectorAll(".coldel").forEach((b) =>
+    b.addEventListener("click", () => deleteColumn(+b.dataset.col)));
+
+  syncDataButtons();
+}
+
+function clearOutputs(hint) {
+  state.result = null; state.current = 0;
+  $("info").style.display = "none";
+  $("dlOneBtn").disabled = true; $("dlAllBtn").disabled = true;
+  $("sheetSelect").style.display = "none";
+  $("stage").innerHTML = '<div class="empty">' + (hint || "Nothing to preview yet.") + "</div>";
+}
+
+// Structural change (load / add / delete row|column): rebuild the grid, then merge.
 function run() {
-  if (!state.tpl || !state.csv) { return; }
+  renderDataEditor();
+  regenerate();
+}
+
+// Cell edits and option changes: re-run the merge WITHOUT rebuilding the grid,
+// so the input the user is typing in keeps focus.
+function regenerate() {
   const mode = $("mode").value;
+  if (!state.tpl) {
+    clearOutputs("Load a template (or click <strong>Load example</strong>), then add data rows below.");
+    showMessage("", "");
+    updateModeUI(mode);
+    return;
+  }
+  const hasData = state.data.columns.length &&
+    state.data.rows.some((r) => r.some((c) => String(c || "").trim() !== ""));
+  if (!hasData) {
+    clearOutputs("Add a data row below (or upload a CSV) to preview.");
+    showMessage("", "");
+    updateModeUI(mode);
+    return;
+  }
   const gapMm = parseFloat($("gap").value) || 0;
   const marginMm = parseFloat($("margin").value) || 0;
   const nameField = $("nameField").value || null;
   let res;
   try {
-    res = generate(state.tpl, state.csv, { mode, gapMm, marginMm, nameField });
+    res = generate(state.tpl, dataToCsv(state.data), { mode, gapMm, marginMm, nameField });
   } catch (err) {
     state.result = null;
     showMessage("err", "⚠ " + err.message);
@@ -570,7 +823,7 @@ function run() {
   updateModeUI(res.mode);
   if (res.mode === "individual") populateNameField(res);
   if (res.unmatched.length)
-    showMessage("warn", "Template fields with no CSV column (left blank): " + res.unmatched.join(", "));
+    showMessage("warn", "Template fields with no data column (left blank): " + res.unmatched.join(", "));
   else
     showMessage("", "");
   renderInfo(res);
@@ -688,28 +941,33 @@ function downloadAll() {
   document.body.appendChild(a); a.click(); a.remove();
 }
 
-wireDrop("tplDrop", "tplInput", (t) => { state.tpl = t; }, "tplName");
-wireDrop("csvDrop", "csvInput", (t) => { state.csv = t; }, "csvName");
-$("gap").addEventListener("input", run);
-$("margin").addEventListener("input", run);
-$("mode").addEventListener("change", () => { updateModeUI($("mode").value); run(); });
-$("nameField").addEventListener("change", run);
-$("genBtn").addEventListener("click", run);
+wireDrop("tplDrop", "tplInput", (t) => { state.tpl = t; maybeInitColumnsFromTemplate(); }, "tplName");
+wireDrop("csvDrop", "csvInput", (t) => { loadCsvIntoModel(t); }, "csvName");
+$("gap").addEventListener("input", regenerate);
+$("margin").addEventListener("input", regenerate);
+$("mode").addEventListener("change", () => { updateModeUI($("mode").value); regenerate(); });
+$("nameField").addEventListener("change", regenerate);
+$("genBtn").addEventListener("click", regenerate);
 $("sheetSelect").addEventListener("change", (e) => { state.current = parseInt(e.target.value, 10); renderPreview(); });
 $("dlAllBtn").addEventListener("click", downloadAll);
+$("addRowBtn").addEventListener("click", addRow);
+$("addColBtn").addEventListener("click", addColumn);
+$("useTplFieldsBtn").addEventListener("click", useTemplateFields);
+$("clearRowsBtn").addEventListener("click", clearRows);
 $("exampleBtn").addEventListener("click", () => {
   if ($("mode").value === "individual") {
-    state.tpl = EXAMPLE_CERT_SVG; state.csv = EXAMPLE_CERT_CSV;
+    state.tpl = EXAMPLE_CERT_SVG; loadCsvIntoModel(EXAMPLE_CERT_CSV);
     $("tplName").textContent = "example-certificate.svg";
     $("csvName").textContent = "example-certificate.csv";
   } else {
-    state.tpl = EXAMPLE_SVG; state.csv = EXAMPLE_CSV;
+    state.tpl = EXAMPLE_SVG; loadCsvIntoModel(EXAMPLE_CSV);
     $("tplName").textContent = "example-classic-badge.svg";
     $("csvName").textContent = "example-names.csv";
   }
   run();
 });
 updateModeUI($("mode").value);
+renderDataEditor();
 </script>
 </body>
 </html>
