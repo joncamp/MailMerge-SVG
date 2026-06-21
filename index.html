@@ -66,12 +66,20 @@
   select { background: var(--panel2); border: 1px solid var(--line); color: var(--text); border-radius: 8px; padding: 7px 10px; font-size: 13px; }
   .stage {
     background: repeating-conic-gradient(#2a2f3c 0% 25%, #262b37 0% 50%) 50% / 22px 22px;
-    border: 1px solid var(--line); border-radius: 10px; padding: 12px; min-height: 320px;
-    display: flex; align-items: center; justify-content: center; overflow: auto;
+    border: 1px solid var(--line); border-radius: 10px; padding: 12px;
+    height: 72vh; min-height: 360px;
+    display: grid; overflow: auto; position: relative;
   }
-  .sheet { background: #fff; box-shadow: 0 6px 24px rgba(0,0,0,.4); max-width: 100%; }
-  .sheet svg { display: block; width: 100%; height: auto; max-height: 72vh; }
+  .sheet {
+    background: #fff; box-shadow: 0 6px 24px rgba(0,0,0,.4); margin: auto;
+    width: calc(var(--fit-w, 100%) * var(--zoom, 1));
+  }
+  .sheet svg { display: block; width: 100%; height: auto; }
+  .stage > .empty { margin: auto; }
   .empty { color: var(--muted); font-size: 14px; text-align: center; }
+  .zoomctl { display: flex; align-items: center; gap: 6px; }
+  .zoomctl button { padding: 5px 9px; min-width: 30px; }
+  .zoomctl #zoomLabel { font-size: 12px; color: var(--muted); min-width: 42px; text-align: center; }
   a.dl { text-decoration: none; }
   footer { max-width: 1100px; margin: 0 auto; padding: 0 20px 40px; color: var(--muted); font-size: 12px; }
   code { background: var(--panel2); padding: 1px 5px; border-radius: 5px; font-size: 12px; }
@@ -174,6 +182,12 @@
     <div class="preview-head">
       <h2 style="margin:0">Preview</h2>
       <div style="display:flex; gap:8px; align-items:center;">
+        <div class="zoomctl">
+          <button id="zoomOut" class="ghost" title="Zoom out">&minus;</button>
+          <span id="zoomLabel">100%</span>
+          <button id="zoomIn" class="ghost" title="Zoom in">+</button>
+          <button id="zoomFit" class="ghost" title="Fit to view">Fit</button>
+        </div>
         <select id="sheetSelect" style="display:none"></select>
         <a class="dl" id="dlOne" download><button id="dlOneBtn" disabled>Download</button></a>
         <a class="dl" id="dlAll"><button id="dlAllBtn" class="ghost" disabled>Download all (.zip)</button></a>
@@ -205,6 +219,7 @@
   <strong>individual</strong> mode any whole-page SVG works. Either way, put <code>{{TOKEN}}</code> placeholders in the
   artwork and CSV column names are matched to them automatically. For certificates, add a hidden Inkscape layer labelled
   <code>Backdrop</code> (e.g. an image of the pre-printed stock) to preview alignment — it's shown only on screen, never in downloads.
+  Use the zoom controls (or <code>Ctrl</code>/<code>⌘</code> + scroll over the preview) to inspect detail; <strong>Fit</strong> resets to the full view.
   Host this file free on GitHub Pages, a gist (via htmlpreview), or anywhere static.
 </footer>
 
@@ -571,7 +586,7 @@ Bob Johnson,Scribe`;
 
 /* ---------------- UI wiring ------------------------------------------------ */
 
-const state = { tpl: null, data: { columns: [], rows: [] }, result: null, current: 0, showBackdrop: true };
+const state = { tpl: null, data: { columns: [], rows: [] }, result: null, current: 0, showBackdrop: true, zoom: 1 };
 const $ = (id) => document.getElementById(id);
 
 function wireDrop(dropId, inputId, onLoad, nameId) {
@@ -1034,6 +1049,48 @@ function showSvgInStage(svgText) {
   }
   stage.innerHTML = "";
   stage.appendChild(wrap);
+  applyZoom();
+}
+
+// w/h aspect ratio of the rendered SVG (viewBox first, then measured bbox).
+function svgAspect(svg) {
+  const vb = svg.getAttribute("viewBox");
+  if (vb) {
+    const p = vb.trim().split(/[\s,]+/).map(Number);
+    if (p.length === 4 && p[2] > 0 && p[3] > 0) return p[2] / p[3];
+  }
+  const w = parseFloat(svg.getAttribute("width")), h = parseFloat(svg.getAttribute("height"));
+  if (w > 0 && h > 0) return w / h;
+  try { const b = svg.getBBox(); if (b.width > 0 && b.height > 0) return b.width / b.height; } catch (e) {}
+  return 1;
+}
+
+// Size the sheet so it fits the stage at zoom 1, then scale by state.zoom.
+function applyZoom() {
+  updateZoomLabel();
+  const stage = $("stage");
+  const sheet = stage && stage.querySelector(".sheet");
+  const svg = sheet && sheet.querySelector("svg");
+  if (!svg) return;
+  const cs = getComputedStyle(stage);
+  const availW = stage.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight);
+  const availH = stage.clientHeight - parseFloat(cs.paddingTop) - parseFloat(cs.paddingBottom);
+  const ar = svgAspect(svg);
+  let fitW = availW;
+  if (fitW / ar > availH) fitW = availH * ar;
+  fitW = Math.max(1, fitW);
+  sheet.style.setProperty("--fit-w", fitW + "px");
+  sheet.style.setProperty("--zoom", state.zoom);
+}
+
+function updateZoomLabel() {
+  const l = $("zoomLabel");
+  if (l) l.textContent = Math.round(state.zoom * 100) + "%";
+}
+
+function setZoom(z) {
+  state.zoom = Math.min(8, Math.max(0.25, z));
+  applyZoom();
 }
 
 function renderPreview() {
@@ -1104,6 +1161,19 @@ $("nameField").addEventListener("change", regenerate);
 $("backdropToggle").addEventListener("change", (e) => { state.showBackdrop = e.target.checked; refreshPreview(); });
 $("genBtn").addEventListener("click", regenerate);
 $("sheetSelect").addEventListener("change", (e) => { state.current = parseInt(e.target.value, 10); renderPreview(); });
+$("zoomIn").addEventListener("click", () => setZoom(state.zoom * 1.25));
+$("zoomOut").addEventListener("click", () => setZoom(state.zoom / 1.25));
+$("zoomFit").addEventListener("click", () => setZoom(1));
+$("stage").addEventListener("wheel", (e) => {
+  if (!(e.ctrlKey || e.metaKey)) return;
+  e.preventDefault();
+  setZoom(state.zoom * (e.deltaY < 0 ? 1.1 : 1 / 1.1));
+}, { passive: false });
+let zoomResizeTimer;
+window.addEventListener("resize", () => {
+  clearTimeout(zoomResizeTimer);
+  zoomResizeTimer = setTimeout(applyZoom, 120);
+});
 $("dlAllBtn").addEventListener("click", downloadAll);
 $("addRowBtn").addEventListener("click", addRow);
 $("useTplFieldsBtn").addEventListener("click", useTemplateFields);
