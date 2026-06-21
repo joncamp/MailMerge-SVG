@@ -50,7 +50,7 @@ For a **grid** template, keep the two conventions the generator relies on:
 
 - the tile artwork lives in a group labelled `inkscape:label="Nametag"` (or
   `Tile` / `Cell`), and
-- the cut outline is labelled `<tile-label> Border` (e.g.
+- the cut outline is labelled `Border` (or `<tile-label> Border`, e.g.
   `inkscape:label="Nametag Border"`); it may be a `rect`, `circle`, `ellipse`,
   `polygon`, or `polyline` — its bounding box sets the grid tile size.
 

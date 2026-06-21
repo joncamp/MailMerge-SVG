@@ -202,7 +202,7 @@
 </main>
 <footer>
   Tip: for <strong>grid</strong> mode the template needs a tile group labelled <code>inkscape:label="Nametag"</code>
-  (or <code>Tile</code>/<code>Cell</code>) with a cut outline labelled <code>Nametag Border</code>. For
+  (or <code>Tile</code>/<code>Cell</code>) with a cut outline labelled <code>Border</code> (or <code>Nametag Border</code>). For
   <strong>individual</strong> mode any whole-page SVG works. Either way, put <code>{{TOKEN}}</code> placeholders in the
   artwork and CSV column names are matched to them automatically. For certificates, add a hidden Inkscape layer labelled
   <code>Backdrop</code> (e.g. an image of the pre-printed stock) to preview alignment — it's shown only on screen, never in downloads.
@@ -303,9 +303,16 @@ function shapeBBox(name, el) {
   }
   return [null, null];
 }
-function parseTagGeometry(xml, borderLabel) {
-  const pos = xml.indexOf('inkscape:label="' + borderLabel + '"');
-  if (pos < 0) throw new Error('Could not find an element with inkscape:label="' + borderLabel + '".');
+function parseTagGeometry(xml, borderLabels) {
+  if (typeof borderLabels === "string") borderLabels = [borderLabels];
+  let pos = -1, borderLabel = borderLabels[0];
+  for (const cand of borderLabels) {
+    const p = xml.indexOf('inkscape:label="' + cand + '"');
+    if (p >= 0) { pos = p; borderLabel = cand; break; }
+  }
+  if (pos < 0)
+    throw new Error("Could not find a border element with inkscape:label " +
+                    borderLabels.map((l) => '"' + l + '"').join(" or ") + " in the tile group.");
   const s = xml.lastIndexOf("<", pos), e = xml.indexOf(">", pos);
   if (s < 0 || e < 0) throw new Error('Malformed "' + borderLabel + '" element.');
   const el = xml.slice(s, e + 1);
@@ -421,14 +428,14 @@ function generateGrid(svgText, tile, csvText, opts) {
   const { start, end, label: tileLabel } = tile;
   const prefix = svgText.slice(0, start), suffix = svgText.slice(end);
   const nametagXml = svgText.slice(start, end);
-  const borderLabel = tileLabel + " Border";
+  const borderLabels = [tileLabel + " Border", "Border"];
 
   const tokens = detectPlaceholders(nametagXml);
   if (tokens.size === 0)
     throw new Error("No {{placeholder}} tokens found inside the " + tileLabel + " group. Add at least one, e.g. {{NAME}}.");
 
   const { vbW, vbH, uuPerMm } = parsePage(svgText);
-  const { w: tagW, h: tagH, stroke } = parseTagGeometry(nametagXml, borderLabel);
+  const { w: tagW, h: tagH, stroke } = parseTagGeometry(nametagXml, borderLabels);
   const scale = uuPerMm || 1;
   const gap = gapMm * scale, margin = marginMm * scale;
   const { cols, rows, pitchX, pitchY } = computeGrid(vbW, vbH, tagW, tagH, stroke, gap, margin);
