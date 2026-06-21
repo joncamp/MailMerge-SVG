@@ -69,13 +69,12 @@
     background: repeating-conic-gradient(#2a2f3c 0% 25%, #262b37 0% 50%) 50% / 22px 22px;
     border: 1px solid var(--line); border-radius: 10px; padding: 12px;
     flex: 1 1 auto; min-height: 280px;
-    display: grid; overflow: auto; position: relative;
+    display: grid; overflow: auto; position: relative; scrollbar-gutter: stable;
   }
   .sheet {
-    background: #fff; box-shadow: 0 6px 24px rgba(0,0,0,.4); margin: auto;
-    width: calc(var(--fit-w, 100%) * var(--zoom, 1));
+    background: #fff; box-shadow: 0 6px 24px rgba(0,0,0,.4); margin: auto; width: 100%;
   }
-  .sheet svg { display: block; width: 100%; height: auto; }
+  .sheet svg { display: block; width: 100%; height: 100%; }
   .stage > .empty { margin: auto; }
   .empty { color: var(--muted); font-size: 14px; text-align: center; }
   .zoomctl { display: flex; align-items: center; gap: 6px; }
@@ -1067,6 +1066,9 @@ function svgAspect(svg) {
 }
 
 // Size the sheet so it fits the stage at zoom 1, then scale by state.zoom.
+// Measure from offset size (border-box) minus border+padding so the result is
+// independent of whether scrollbars are currently shown — otherwise sizing the
+// sheet would toggle scrollbars, change the measurement, and feed back forever.
 function applyZoom() {
   updateZoomLabel();
   const stage = $("stage");
@@ -1074,14 +1076,15 @@ function applyZoom() {
   const svg = sheet && sheet.querySelector("svg");
   if (!svg) return;
   const cs = getComputedStyle(stage);
-  const availW = stage.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight);
-  const availH = stage.clientHeight - parseFloat(cs.paddingTop) - parseFloat(cs.paddingBottom);
+  const px = (v) => parseFloat(v) || 0;
+  const availW = stage.offsetWidth - px(cs.borderLeftWidth) - px(cs.borderRightWidth) - px(cs.paddingLeft) - px(cs.paddingRight);
+  const availH = stage.offsetHeight - px(cs.borderTopWidth) - px(cs.borderBottomWidth) - px(cs.paddingTop) - px(cs.paddingBottom);
   const ar = svgAspect(svg);
-  let fitW = availW;
-  if (fitW / ar > availH) fitW = availH * ar;
-  fitW = Math.max(1, fitW);
-  sheet.style.setProperty("--fit-w", fitW + "px");
-  sheet.style.setProperty("--zoom", state.zoom);
+  let fitW = availW, fitH = availW / ar;
+  if (fitH > availH) { fitH = availH; fitW = availH * ar; }
+  fitW = Math.max(1, fitW); fitH = Math.max(1, fitH);
+  sheet.style.width = (fitW * state.zoom) + "px";
+  sheet.style.height = (fitH * state.zoom) + "px";
 }
 
 function updateZoomLabel() {
