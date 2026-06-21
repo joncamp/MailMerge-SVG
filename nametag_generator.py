@@ -23,7 +23,10 @@ import sys
 
 # --- placeholder / label configuration -------------------------------------
 
-DEFAULT_PLACEHOLDER = "{{NAME}}"
+# Placeholders look like ``{{NAME}}`` / ``{{First Name}}``. Every distinct token
+# found in the template is matched to a CSV column of the same name, so a
+# template defines which fields it needs and any matching CSV merges into it.
+PLACEHOLDER_RE = re.compile(r"\{\{\s*([^{}]+?)\s*\}\}")
 NAMETAG_LABEL = "Nametag"
 BORDER_LABEL = "Nametag Border"
 
@@ -164,26 +167,70 @@ def _scale_from_dimension(dim_value, viewbox_extent):
 
 
 def parse_tag_geometry(nametag_xml):
-    """Return (width, height, stroke) of the Nametag Border rect, in the
-    template's user units (the same space as the viewBox and transforms)."""
+    """Return (width, height, stroke) of the element labelled ``Nametag Border``,
+    in the template's user units (the same space as the viewBox and transforms).
+
+    The border may be any of ``rect``, ``circle``, ``ellipse``, ``polygon`` or
+    ``polyline``, so nametags can be any shape; the width/height returned are the
+    shape's bounding box, which is what the grid tiles on."""
     border_pos = nametag_xml.find(f'inkscape:label="{BORDER_LABEL}"')
     if border_pos == -1:
-        raise ValueError(f'Could not find the "{BORDER_LABEL}" rect in the nametag group.')
-    rect_start = nametag_xml.rfind("<rect", 0, border_pos)
-    rect_end = nametag_xml.find(">", border_pos)
-    rect_tag = nametag_xml[rect_start:rect_end]
+        raise ValueError(
+            f'Could not find an element with inkscape:label="{BORDER_LABEL}" '
+            "in the nametag group."
+        )
+    el_start = nametag_xml.rfind("<", 0, border_pos)
+    el_end = nametag_xml.find(">", border_pos)
+    if el_start == -1 or el_end == -1:
+        raise ValueError(f'Malformed "{BORDER_LABEL}" element in the template.')
+    el = nametag_xml[el_start:el_end + 1]
 
-    width = get_attr(rect_tag, "width")
-    height = get_attr(rect_tag, "height")
+    name_match = re.match(r"<\s*([A-Za-z0-9:]+)", el)
+    tag_name = name_match.group(1).split(":")[-1].lower() if name_match else ""
+
+    width, height = _shape_bbox(tag_name, el)
     if width is None or height is None:
-        raise ValueError("Nametag Border rect is missing width/height.")
+        raise ValueError(
+            f'Could not determine the size of the "{BORDER_LABEL}" '
+            f"<{tag_name or '?'}> element."
+        )
 
     stroke = 0.0
-    style = get_attr(rect_tag, "style") or ""
-    m = re.search(r"stroke-width:([0-9.]+)", style)
+    style = get_attr(el, "style") or ""
+    m = re.search(r"stroke-width:\s*([0-9.]+)", style)
     if m:
         stroke = float(m.group(1))
+    elif get_attr(el, "stroke-width"):
+        try:
+            stroke = float(get_attr(el, "stroke-width"))
+        except ValueError:
+            stroke = 0.0
     return float(width), float(height), stroke
+
+
+def _shape_bbox(tag_name, el):
+    """Bounding-box (width, height) for a supported border shape, or (None, None)."""
+    def num(attr):
+        try:
+            return float(get_attr(el, attr))
+        except (TypeError, ValueError):
+            return None
+
+    if tag_name == "rect":
+        return num("width"), num("height")
+    if tag_name == "circle":
+        r = num("r")
+        return (2 * r, 2 * r) if r is not None else (None, None)
+    if tag_name == "ellipse":
+        rx, ry = num("rx"), num("ry")
+        return (2 * rx, 2 * ry) if rx is not None and ry is not None else (None, None)
+    if tag_name in ("polygon", "polyline"):
+        points = get_attr(el, "points") or ""
+        coords = [float(v) for v in re.findall(r"[-+]?[0-9]*\.?[0-9]+", points)]
+        xs, ys = coords[0::2], coords[1::2]
+        if xs and ys:
+            return max(xs) - min(xs), max(ys) - min(ys)
+    return None, None
 
 
 # --- grid layout ------------------------------------------------------------
@@ -202,11 +249,34 @@ def compute_grid(page_w, page_h, tag_w, tag_h, stroke, gap, margin):
     return cols, rows, pitch_x, pitch_y
 
 
-# --- name copy generation ---------------------------------------------------
+# --- placeholder detection & name copy generation ---------------------------
 
-def make_tag_copy(nametag_xml, name, index, placeholder, tx, ty):
-    """Return a positioned, name-substituted copy of the nametag group."""
-    body = nametag_xml.replace(placeholder, xml_escape_text(name))
+def detect_placeholders(nametag_xml):
+    """Return an ordered mapping of every distinct ``{{token}}`` found in the
+    nametag markup to its normalised (lower-cased, stripped) field name. The
+    raw token text -- braces and inner spacing included -- is the dict key, so
+    substitution replaces exactly what appears in the template."""
+    tokens = {}
+    for m in PLACEHOLDER_RE.finditer(nametag_xml):
+        raw = m.group(0)
+        if raw not in tokens:
+            tokens[raw] = m.group(1).strip().lower()
+    return tokens
+
+
+def make_tag_copy(nametag_xml, row, tokens, index, tx, ty, missing):
+    """Return a positioned copy of the nametag group with every ``{{token}}``
+    replaced by the matching value from ``row`` (a dict keyed by lower-cased
+    column name). Tokens with no matching column are blanked and recorded in
+    ``missing``."""
+    body = nametag_xml
+    for raw, field in tokens.items():
+        if field in row:
+            value = row[field]
+        else:
+            missing.add(field)
+            value = ""
+        body = body.replace(raw, xml_escape_text(value))
     # Make every id unique to this copy so the merged SVG stays valid.
     body = _ID_ATTR.sub(lambda m: f'id="{m.group(1)}__{index}"', body)
     return (
@@ -219,34 +289,24 @@ def make_tag_copy(nametag_xml, name, index, placeholder, tx, ty):
 
 # --- csv input --------------------------------------------------------------
 
-def read_names(csv_path, column=None):
-    """Read names from a CSV. Uses the named column when given, otherwise the
-    first column. A leading ``Name`` header row is skipped automatically."""
+def read_rows(csv_path):
+    """Read a CSV with a header row into (fieldnames, rows). Each row is a dict
+    keyed by lower-cased, stripped column name so it matches placeholder fields
+    case-insensitively."""
     with open(csv_path, newline="", encoding="utf-8-sig") as fh:
-        rows = list(csv.reader(fh))
-    if not rows:
-        return []
-
-    col_index = 0
-    data_rows = rows
-    header = [c.strip() for c in rows[0]]
-    if column is not None:
-        lowered = [h.lower() for h in header]
-        if column.lower() in lowered:
-            col_index = lowered.index(column.lower())
-            data_rows = rows[1:]
-        else:
-            raise ValueError(f'Column "{column}" not found in CSV header: {header}')
-    elif header and header[0].lower() == "name":
-        data_rows = rows[1:]
-
-    names = []
-    for row in data_rows:
-        if col_index < len(row):
-            value = row[col_index].strip()
-            if value:
-                names.append(value)
-    return names
+        reader = csv.DictReader(fh)
+        fieldnames = [f.strip() for f in (reader.fieldnames or [])]
+        rows = []
+        for raw in reader:
+            row = {}
+            for key, value in raw.items():
+                if key is None:
+                    continue
+                row[key.strip().lower()] = (value or "").strip()
+            # Skip fully blank rows.
+            if any(row.values()):
+                rows.append(row)
+    return fieldnames, rows
 
 
 # --- output assembly --------------------------------------------------------
@@ -258,8 +318,7 @@ def page_filename(output_path, page_number):
     return f"{stem}_{page_number}{ext}"
 
 
-def generate(template_path, names_csv_path, output_path,
-             gap=2.0, margin=0.0, placeholder=DEFAULT_PLACEHOLDER, column=None):
+def generate(template_path, names_csv_path, output_path, gap=2.0, margin=0.0):
     with open(template_path, encoding="utf-8") as fh:
         svg_text = fh.read()
 
@@ -268,10 +327,11 @@ def generate(template_path, names_csv_path, output_path,
     suffix = svg_text[end:]
     nametag_xml = svg_text[start:end]
 
-    if placeholder not in nametag_xml:
+    tokens = detect_placeholders(nametag_xml)
+    if not tokens:
         raise ValueError(
-            f'Placeholder "{placeholder}" not found inside the nametag group. '
-            "Check the template or pass --placeholder."
+            "No {{placeholder}} tokens found inside the nametag group. "
+            "Add at least one, e.g. {{NAME}}."
         )
 
     page_w, page_h, uu_per_mm = parse_page(svg_text)
@@ -289,21 +349,32 @@ def generate(template_path, names_csv_path, output_path,
     )
     per_page = cols * rows
 
-    names = read_names(names_csv_path, column)
-    if not names:
-        raise ValueError(f"No names found in {names_csv_path}.")
+    fieldnames, data_rows = read_rows(names_csv_path)
+    if not data_rows:
+        raise ValueError(f"No data rows found in {names_csv_path}.")
 
-    total_pages = (len(names) + per_page - 1) // per_page
+    template_fields = list(dict.fromkeys(tokens.values()))
+    header_set = {f.strip().lower() for f in fieldnames}
+    matched = [f for f in template_fields if f in header_set]
+    unmatched = [f for f in template_fields if f not in header_set]
+    if not matched:
+        raise ValueError(
+            f"CSV {names_csv_path} has no columns matching the template "
+            f"placeholders {template_fields}. CSV columns: {fieldnames}."
+        )
+
+    missing = set()
+    total_pages = (len(data_rows) + per_page - 1) // per_page
     written = []
     for page in range(total_pages):
-        chunk = names[page * per_page:(page + 1) * per_page]
+        chunk = data_rows[page * per_page:(page + 1) * per_page]
         copies = []
-        for i, name in enumerate(chunk):
+        for i, data_row in enumerate(chunk):
             col = i % cols
-            row = i // cols
+            grid_row = i // cols
             tx = margin_uu + col * pitch_x
-            ty = margin_uu + row * pitch_y
-            copies.append(make_tag_copy(nametag_xml, name, i, placeholder, tx, ty))
+            ty = margin_uu + grid_row * pitch_y
+            copies.append(make_tag_copy(nametag_xml, data_row, tokens, i, tx, ty, missing))
 
         out_svg = prefix + "".join(copies) + suffix
         out_name = page_filename(output_path, page + 1)
@@ -322,13 +393,17 @@ def generate(template_path, names_csv_path, output_path,
         tag_size_in = None
 
     return {
+        "fields": template_fields,
+        "matched": matched,
+        "unmatched": sorted(unmatched),
+        "csv_columns": fieldnames,
         "page_size_uu": (page_w, page_h),
         "tag_size_uu": (tag_w, tag_h),
         "page_size_in": page_size_in,
         "tag_size_in": tag_size_in,
         "grid": (cols, rows),
         "per_page": per_page,
-        "names": len(names),
+        "names": len(data_rows),
         "files": written,
     }
 
@@ -339,20 +414,16 @@ def main(argv=None):
                     "tiled into a Glowforge-ready grid."
     )
     parser.add_argument("--template", default="template.svg", help="Template SVG (default: template.svg)")
-    parser.add_argument("--names", default="names.csv", help="CSV of names (default: names.csv)")
+    parser.add_argument("--names", default="names.csv", help="CSV of merge data (default: names.csv)")
     parser.add_argument("--output", default="output.svg", help="Output SVG (default: output.svg)")
     parser.add_argument("--gap", type=float, default=2.0, help="Gap between nametags in mm (default: 2.0)")
     parser.add_argument("--margin", type=float, default=0.0, help="Margin around the grid in mm (default: 0.0)")
-    parser.add_argument("--placeholder", default=DEFAULT_PLACEHOLDER,
-                        help='Placeholder text to replace (default: "{{NAME}}")')
-    parser.add_argument("--column", default=None, help="CSV column name to read names from (default: first column)")
     args = parser.parse_args(argv)
 
     try:
         result = generate(
             args.template, args.names, args.output,
             gap=args.gap, margin=args.margin,
-            placeholder=args.placeholder, column=args.column,
         )
     except (ValueError, FileNotFoundError) as exc:
         print(f"Error: {exc}", file=sys.stderr)
@@ -367,8 +438,12 @@ def main(argv=None):
         pw, ph = result["page_size_uu"]
         tw, th = result["tag_size_uu"]
         print(f"Bed: {pw:g} x {ph:g} (user units)   Tag: {tw:g} x {th:g} (user units)")
+    print(f"Fields: {', '.join(result['fields'])}  (matched CSV columns: {', '.join(result['matched'])})")
+    if result["unmatched"]:
+        print(f"WARNING: template fields with no CSV column (left blank): "
+              f"{', '.join(result['unmatched'])}", file=sys.stderr)
     print(f"Grid: {cols} cols x {rows} rows = {result['per_page']} tags/sheet")
-    print(f"Names: {result['names']}  ->  {len(result['files'])} sheet(s)")
+    print(f"Records: {result['names']}  ->  {len(result['files'])} sheet(s)")
     for name, count in result["files"]:
         print(f"  {name}: {count} tag(s)")
     return 0
