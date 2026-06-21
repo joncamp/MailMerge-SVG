@@ -65,11 +65,14 @@
   .preview-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 12px; flex-wrap: wrap; }
   select { background: var(--panel2); border: 1px solid var(--line); color: var(--text); border-radius: 8px; padding: 7px 10px; font-size: 13px; }
   .preview-panel { display: flex; flex-direction: column; }
+  /* stage-frame is a stable, non-scrolling size reference: it never shows
+     scrollbars, so measuring it can't feed back into the zoom calculation. */
+  .stage-frame { flex: 1 1 auto; min-height: 280px; min-width: 0; display: flex; overflow: hidden; }
   .stage {
     background: repeating-conic-gradient(#2a2f3c 0% 25%, #262b37 0% 50%) 50% / 22px 22px;
     border: 1px solid var(--line); border-radius: 10px; padding: 12px;
-    flex: 1 1 auto; min-height: 280px;
-    display: grid; overflow: auto; position: relative; scrollbar-gutter: stable;
+    flex: 1 1 auto; min-width: 0;
+    display: grid; overflow: auto; position: relative;
   }
   .sheet {
     background: #fff; box-shadow: 0 6px 24px rgba(0,0,0,.4); margin: auto; width: 100%;
@@ -196,8 +199,10 @@
 
     <div class="info" id="info" style="display:none; margin-bottom:14px;"></div>
 
-    <div class="stage" id="stage">
-      <div class="empty">Load a template (or click <strong>Load example</strong>), then add data rows below to get started.</div>
+    <div class="stage-frame" id="stageFrame">
+      <div class="stage" id="stage">
+        <div class="empty">Load a template (or click <strong>Load example</strong>), then add data rows below to get started.</div>
+      </div>
     </div>
   </div>
 
@@ -1066,23 +1071,26 @@ function svgAspect(svg) {
 }
 
 // Size the sheet so it fits the stage at zoom 1, then scale by state.zoom.
-// Measure from offset size (border-box) minus border+padding so the result is
-// independent of whether scrollbars are currently shown — otherwise sizing the
-// sheet would toggle scrollbars, change the measurement, and feed back forever.
+// Measure the available area from #stageFrame, which has overflow:hidden and so
+// never shows scrollbars — its size is therefore independent of how big the
+// sheet is. (Measuring the scrolling #stage instead would let scrollbars change
+// the measurement, feeding back through the ResizeObserver into a runaway loop.)
 function applyZoom() {
   updateZoomLabel();
-  const stage = $("stage");
+  const stage = $("stage"), frame = $("stageFrame");
   const sheet = stage && stage.querySelector(".sheet");
   const svg = sheet && sheet.querySelector("svg");
-  if (!svg) return;
+  if (!svg || !frame) return;
   const cs = getComputedStyle(stage);
   const px = (v) => parseFloat(v) || 0;
-  const availW = stage.offsetWidth - px(cs.borderLeftWidth) - px(cs.borderRightWidth) - px(cs.paddingLeft) - px(cs.paddingRight);
-  const availH = stage.offsetHeight - px(cs.borderTopWidth) - px(cs.borderBottomWidth) - px(cs.paddingTop) - px(cs.paddingBottom);
+  const chromeX = px(cs.borderLeftWidth) + px(cs.borderRightWidth) + px(cs.paddingLeft) + px(cs.paddingRight);
+  const chromeY = px(cs.borderTopWidth) + px(cs.borderBottomWidth) + px(cs.paddingTop) + px(cs.paddingBottom);
+  const availW = frame.clientWidth - chromeX;
+  const availH = frame.clientHeight - chromeY;
   const ar = svgAspect(svg);
   let fitW = availW, fitH = availW / ar;
   if (fitH > availH) { fitH = availH; fitW = availH * ar; }
-  fitW = Math.max(1, fitW); fitH = Math.max(1, fitH);
+  fitW = Math.max(1, Math.floor(fitW)); fitH = Math.max(1, Math.floor(fitH));
   sheet.style.width = (fitW * state.zoom) + "px";
   sheet.style.height = (fitH * state.zoom) + "px";
 }
@@ -1174,7 +1182,7 @@ $("stage").addEventListener("wheel", (e) => {
   setZoom(state.zoom * (e.deltaY < 0 ? 1.1 : 1 / 1.1));
 }, { passive: false });
 if (window.ResizeObserver) {
-  new ResizeObserver(() => applyZoom()).observe($("stage"));
+  new ResizeObserver(() => applyZoom()).observe($("stageFrame"));
 } else {
   let zoomResizeTimer;
   window.addEventListener("resize", () => {
