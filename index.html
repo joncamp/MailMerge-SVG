@@ -92,6 +92,12 @@
   th.actcol, td.actcol { width: 32px; text-align: center; }
   .rowdel, .coldel { background: transparent; border: none; color: var(--muted); cursor: pointer; font-weight: 700; padding: 2px 6px; font-size: 12px; line-height: 1; }
   .rowdel:hover, .coldel:hover { color: var(--err); }
+  .colmove { background: transparent; border: none; color: var(--muted); cursor: pointer; padding: 2px 3px; font-size: 14px; line-height: 1; }
+  .colmove:hover:not(:disabled) { color: var(--accent); }
+  .colmove:disabled { opacity: .25; cursor: default; }
+  table.data.rowselect td.idxcol { cursor: pointer; }
+  table.data.rowselect td.idxcol:hover { color: var(--accent); background: var(--panel2); }
+  td.idxcol.active { color: var(--accent); font-weight: 700; }
   .data-empty { color: var(--muted); font-size: 13px; padding: 18px 12px; text-align: center; }
   .data-empty strong { color: var(--accent); }
   .field label.toggle { display: flex; align-items: center; gap: 8px; cursor: pointer; }
@@ -589,6 +595,7 @@ function updateModeUI(mode) {
   const indiv = mode === "individual";
   $("gridOpts").style.display = indiv ? "none" : "";
   $("indivOpts").style.display = indiv ? "" : "none";
+  syncRowSelectable();
 }
 
 function populateNameField(res) {
@@ -717,6 +724,15 @@ function deleteColumn(c) {
   state.data.rows.forEach((r) => r.splice(c, 1));
   run();
 }
+// Reorder columns (cosmetic — fields match by name, so output is unaffected).
+function moveColumn(c, dir) {
+  const j = c + dir;
+  const cols = state.data.columns;
+  if (j < 0 || j >= cols.length) return;
+  [cols[c], cols[j]] = [cols[j], cols[c]];
+  state.data.rows.forEach((r) => { [r[c], r[j]] = [r[j], r[c]]; });
+  run();
+}
 
 function syncDataButtons() {
   const hasCols = state.data.columns.length > 0;
@@ -727,6 +743,42 @@ function syncDataButtons() {
   $("addRowBtn").disabled = !hasCols;
   $("clearRowsBtn").disabled = !hasRows;
   $("useTplFieldsBtn").disabled = !missingTpl;
+}
+
+// A row contributes a record only if at least one cell is non-blank (mirrors
+// the core parseCSV row filter), so table rows and result items can differ.
+function rowIsUsable(r) { return r.some((c) => String(c == null ? "" : c).trim() !== ""); }
+
+// Map a table row index to its index among generated items (skipping blanks).
+function itemIndexForRow(ri) {
+  const rows = state.data.rows;
+  if (ri < 0 || ri >= rows.length || !rowIsUsable(rows[ri])) return -1;
+  let idx = -1;
+  for (let i = 0; i <= ri; i++) if (rowIsUsable(rows[i])) idx++;
+  return idx;
+}
+
+// In individual (certificate) mode, clicking a row number previews that row.
+function selectRowPreview(ri) {
+  if (!state.result || state.result.mode !== "individual") return;
+  const idx = itemIndexForRow(ri);
+  if (idx < 0 || idx >= state.result.items.length) return;
+  state.current = idx;
+  const sel = $("sheetSelect");
+  if (sel) sel.value = String(idx);
+  renderPreview();
+  const area = $("dataArea");
+  area.querySelectorAll("td.idxcol.active").forEach((td) => td.classList.remove("active"));
+  const cell = area.querySelector('td.idxcol[data-row="' + ri + '"]');
+  if (cell) cell.classList.add("active");
+}
+
+// Show the row-number click affordance only when previewing individual output.
+function syncRowSelectable() {
+  const t = $("dataArea").querySelector("table.data");
+  if (!t) return;
+  const indiv = !!(state.result && state.result.mode === "individual");
+  t.classList.toggle("rowselect", indiv);
 }
 
 function renderDataEditor() {
@@ -751,17 +803,20 @@ function renderDataEditor() {
   }
 
   let thead = '<tr><th class="idxcol"></th>';
+  const lastCol = columns.length - 1;
   columns.forEach((c, ci) => {
     const cls = tplSet.has(String(c).toLowerCase()) ? "matched" : (tplSet.size ? "unmatched" : "");
     thead += '<th><div class="colhead ' + cls + '">' +
       '<input data-col="' + ci + '" value="' + esc(c) + '" placeholder="column" spellcheck="false">' +
+      '<button class="colmove" data-col="' + ci + '" data-dir="-1" title="Move column left"' + (ci === 0 ? " disabled" : "") + '>‹</button>' +
+      '<button class="colmove" data-col="' + ci + '" data-dir="1" title="Move column right"' + (ci === lastCol ? " disabled" : "") + '>›</button>' +
       '<button class="coldel" data-col="' + ci + '" title="Delete column">✕</button></div></th>';
   });
   thead += '<th class="actcol"></th></tr>';
 
   let tbody = "";
   rows.forEach((r, ri) => {
-    tbody += '<tr><td class="idxcol">' + (ri + 1) + "</td>";
+    tbody += '<tr><td class="idxcol" data-row="' + ri + '" title="Preview this row (certificate mode)">' + (ri + 1) + "</td>";
     columns.forEach((_, ci) => {
       tbody += '<td><input data-row="' + ri + '" data-cell="' + ci + '" value="' + esc(r[ci] || "") + '" spellcheck="false"></td>';
     });
@@ -787,7 +842,12 @@ function renderDataEditor() {
     b.addEventListener("click", () => deleteRow(+b.dataset.row)));
   area.querySelectorAll(".coldel").forEach((b) =>
     b.addEventListener("click", () => deleteColumn(+b.dataset.col)));
+  area.querySelectorAll(".colmove").forEach((b) =>
+    b.addEventListener("click", () => moveColumn(+b.dataset.col, +b.dataset.dir)));
+  area.querySelectorAll("td.idxcol").forEach((td) =>
+    td.addEventListener("click", () => selectRowPreview(+td.dataset.row)));
 
+  syncRowSelectable();
   syncDataButtons();
 }
 
