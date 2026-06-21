@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<svg xmlns="http://www.w3.org/2000/svg"
+     xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape"
+     width="19.5in" height="11in" viewBox="0 0 495.3 279.4" version="1.1">
+  <!-- Round button badge, 2.75in diameter. Fields: NAME, TEAM -->
+  <g id="nametag" inkscape:label="Nametag">
+    <text x="34.925" y="33" text-anchor="middle"
+          font-family="sans-serif" font-size="10" font-weight="bold"
+          fill="#000000">{{NAME}}</text>
+    <line x1="14" y1="38" x2="56" y2="38" stroke="#000000" stroke-width="0.3"/>
+    <text x="34.925" y="47" text-anchor="middle"
+          font-family="sans-serif" font-size="6"
+          fill="#000000">{{TEAM}}</text>
+    <circle id="circle-cut" inkscape:label="Nametag Border"
+            cx="34.925" cy="34.925" r="34.925"
+            style="fill:none;stroke:#ff0000;stroke-width:0.3"/>
+  </g>
+</svg>

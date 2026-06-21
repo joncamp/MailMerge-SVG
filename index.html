@@ -1,0 +1,520 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Nametag Generator — CSV → laser-ready grid</title>
+<style>
+  :root {
+    --bg: #0f1116; --panel: #1a1e27; --panel2: #222734; --line: #313a4d;
+    --text: #e6e9ef; --muted: #98a2b8; --accent: #4f9cff; --accent2: #2f7de0;
+    --ok: #3fb27f; --warn: #e0a93f; --err: #e06a6a;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+    background: var(--bg); color: var(--text); line-height: 1.5;
+  }
+  header { padding: 24px 20px 8px; max-width: 1100px; margin: 0 auto; }
+  h1 { margin: 0 0 4px; font-size: 22px; }
+  header p { margin: 0; color: var(--muted); font-size: 14px; }
+  main { max-width: 1100px; margin: 0 auto; padding: 16px 20px 60px; display: grid;
+         grid-template-columns: 360px 1fr; gap: 20px; align-items: start; }
+  @media (max-width: 820px) { main { grid-template-columns: 1fr; } }
+  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 16px; }
+  .panel h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .06em;
+              color: var(--muted); margin: 0 0 12px; }
+  .field { margin-bottom: 14px; }
+  .field label { display: block; font-size: 13px; margin-bottom: 6px; color: var(--text); }
+  .drop {
+    border: 1.5px dashed var(--line); border-radius: 10px; padding: 14px; text-align: center;
+    color: var(--muted); font-size: 13px; cursor: pointer; transition: .15s; background: var(--panel2);
+  }
+  .drop:hover, .drop.drag { border-color: var(--accent); color: var(--text); }
+  .drop strong { color: var(--accent); }
+  .filename { font-size: 12px; color: var(--ok); margin-top: 6px; word-break: break-all; min-height: 14px; }
+  input[type=file] { display: none; }
+  .row { display: flex; gap: 10px; }
+  .row .field { flex: 1; }
+  input[type=number] {
+    width: 100%; background: var(--panel2); border: 1px solid var(--line); color: var(--text);
+    border-radius: 8px; padding: 8px 10px; font-size: 14px;
+  }
+  button {
+    background: var(--accent2); color: #fff; border: none; border-radius: 8px; padding: 9px 14px;
+    font-size: 14px; cursor: pointer; font-weight: 600;
+  }
+  button:hover { background: var(--accent); }
+  button.ghost { background: transparent; border: 1px solid var(--line); color: var(--text); font-weight: 500; }
+  button.ghost:hover { border-color: var(--accent); color: var(--accent); }
+  button:disabled { opacity: .45; cursor: not-allowed; }
+  .actions { display: flex; gap: 8px; flex-wrap: wrap; }
+  .info { font-size: 13px; }
+  .info .line { display: flex; justify-content: space-between; gap: 12px; padding: 3px 0; border-bottom: 1px dashed var(--line); }
+  .info .line:last-child { border-bottom: none; }
+  .info .k { color: var(--muted); }
+  .info .v { text-align: right; font-variant-numeric: tabular-nums; }
+  .pill { display: inline-block; background: var(--panel2); border: 1px solid var(--line);
+          border-radius: 999px; padding: 1px 9px; font-size: 12px; margin: 2px 4px 2px 0; }
+  .pill.ok { border-color: var(--ok); color: var(--ok); }
+  .pill.warn { border-color: var(--warn); color: var(--warn); }
+  .msg { font-size: 13px; padding: 10px 12px; border-radius: 8px; margin-top: 10px; display: none; }
+  .msg.err { display: block; background: rgba(224,106,106,.12); border: 1px solid var(--err); color: #ffb3b3; }
+  .msg.warn { display: block; background: rgba(224,169,63,.12); border: 1px solid var(--warn); color: #ffd98a; }
+  .preview-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 12px; flex-wrap: wrap; }
+  select { background: var(--panel2); border: 1px solid var(--line); color: var(--text); border-radius: 8px; padding: 7px 10px; font-size: 13px; }
+  .stage {
+    background: repeating-conic-gradient(#2a2f3c 0% 25%, #262b37 0% 50%) 50% / 22px 22px;
+    border: 1px solid var(--line); border-radius: 10px; padding: 12px; min-height: 320px;
+    display: flex; align-items: center; justify-content: center; overflow: auto;
+  }
+  .sheet { background: #fff; box-shadow: 0 6px 24px rgba(0,0,0,.4); max-width: 100%; }
+  .sheet svg { display: block; width: 100%; height: auto; max-height: 72vh; }
+  .empty { color: var(--muted); font-size: 14px; text-align: center; }
+  a.dl { text-decoration: none; }
+  footer { max-width: 1100px; margin: 0 auto; padding: 0 20px 40px; color: var(--muted); font-size: 12px; }
+  code { background: var(--panel2); padding: 1px 5px; border-radius: 5px; font-size: 12px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Nametag Generator</h1>
+  <p>Mail-merge a CSV onto an SVG template and tile the tags into a laser-ready grid — all in your browser. Nothing is uploaded.</p>
+</header>
+<main>
+  <div class="panel" id="controls">
+    <h2>Inputs</h2>
+
+    <div class="field">
+      <label>Template SVG</label>
+      <div class="drop" id="tplDrop">
+        Drop an <strong>.svg</strong> here or <strong>browse</strong>
+        <input type="file" id="tplInput" accept=".svg,image/svg+xml">
+      </div>
+      <div class="filename" id="tplName"></div>
+    </div>
+
+    <div class="field">
+      <label>Data CSV</label>
+      <div class="drop" id="csvDrop">
+        Drop a <strong>.csv</strong> here or <strong>browse</strong>
+        <input type="file" id="csvInput" accept=".csv,text/csv">
+      </div>
+      <div class="filename" id="csvName"></div>
+    </div>
+
+    <div class="row">
+      <div class="field">
+        <label>Gap (mm)</label>
+        <input type="number" id="gap" value="2" min="0" step="0.5">
+      </div>
+      <div class="field">
+        <label>Margin (mm)</label>
+        <input type="number" id="margin" value="0" min="0" step="0.5">
+      </div>
+    </div>
+
+    <div class="actions">
+      <button id="exampleBtn" class="ghost">Load example</button>
+      <button id="genBtn">Generate</button>
+    </div>
+
+    <div class="msg" id="message"></div>
+  </div>
+
+  <div class="panel">
+    <div class="preview-head">
+      <h2 style="margin:0">Preview</h2>
+      <div style="display:flex; gap:8px; align-items:center;">
+        <select id="sheetSelect" style="display:none"></select>
+        <a class="dl" id="dlOne" download><button id="dlOneBtn" disabled>Download sheet</button></a>
+        <a class="dl" id="dlAll"><button id="dlAllBtn" class="ghost" disabled>Download all</button></a>
+      </div>
+    </div>
+
+    <div class="info" id="info" style="display:none; margin-bottom:14px;"></div>
+
+    <div class="stage" id="stage">
+      <div class="empty">Load a template and a CSV (or click <strong>Load example</strong>) to see your grid.</div>
+    </div>
+  </div>
+</main>
+<footer>
+  Tip: a template must contain a group labelled <code>inkscape:label="Nametag"</code> with one or more
+  <code>{{TOKEN}}</code> placeholders and a cut outline labelled <code>Nametag Border</code>
+  (rect, circle, ellipse, polygon, or polyline). CSV column names are matched to the placeholders
+  automatically. Host this file free on GitHub Pages, a gist (via htmlpreview), or anywhere static.
+</footer>
+
+<script>
+"use strict";
+
+/* ---------------- core merge logic (ported from nametag_generator.py) -------- */
+
+const UNIT_TO_MM = { "": null, "mm": 1, "cm": 10, "q": 0.25, "in": 25.4,
+                     "pt": 25.4/72, "pc": 25.4/6, "px": 25.4/96, "%": null };
+
+function getAttr(tag, name) {
+  const re = new RegExp(name.replace(/[-/\\^$*+?.()|[\]{}]/g, "\\$&") + '="([^"]*)"');
+  const m = tag.match(re);
+  return m ? m[1] : null;
+}
+function parseLength(v) {
+  if (!v) return [null, null];
+  const m = v.match(/^\s*([+-]?[0-9]*\.?[0-9]+)\s*([a-z%]*)\s*$/i);
+  if (!m) return [null, null];
+  return [parseFloat(m[1]), m[2].toLowerCase()];
+}
+function fmt(x) { return x.toFixed(5).replace(/0+$/, "").replace(/\.$/, ""); }
+function xmlEscape(t) { return t.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;"); }
+
+function findLabeledGroup(svg, label) {
+  const needle = 'inkscape:label="' + label + '"';
+  const labelPos = svg.indexOf(needle);
+  if (labelPos < 0) throw new Error('Could not find a <g> with inkscape:label="' + label + '".');
+  const start = svg.lastIndexOf("<", labelPos);
+  if (start < 0 || svg.substr(start, 2) !== "<g")
+    throw new Error('Label "' + label + '" is not on a <g> element.');
+  const tok = /<g(?=[\s>])|<\/g>/g;
+  tok.lastIndex = start;
+  let depth = 0, m;
+  while ((m = tok.exec(svg))) {
+    if (m[0] === "</g>") {
+      depth--;
+      if (depth === 0) return [start, tok.lastIndex];
+    } else {
+      const gt = svg.indexOf(">", m.index + 2);
+      if (gt < 0) throw new Error("Malformed template: unterminated <g> tag.");
+      if (svg[gt - 1] !== "/") depth++;
+      tok.lastIndex = gt + 1;
+    }
+  }
+  throw new Error('Unbalanced <g> tags while extracting "' + label + '".');
+}
+
+function scaleFromDim(dim, ext) {
+  const [val, unit] = parseLength(dim);
+  if (val == null || !ext) return null;
+  const mmPer = UNIT_TO_MM[unit];
+  if (mmPer == null) return null;
+  const mm = val * mmPer;
+  if (mm <= 0) return null;
+  return ext / mm;
+}
+function parsePage(svg) {
+  const s = svg.indexOf("<svg"), e = svg.indexOf(">", s);
+  const tag = svg.slice(s, e);
+  const vb = getAttr(tag, "viewBox");
+  if (!vb) throw new Error("Template <svg> has no viewBox; cannot determine page size.");
+  const p = vb.replace(/,/g, " ").trim().split(/\s+/);
+  if (p.length !== 4) throw new Error("Unexpected viewBox value: " + vb);
+  const vbW = parseFloat(p[2]), vbH = parseFloat(p[3]);
+  let uu = scaleFromDim(getAttr(tag, "width"), vbW);
+  if (uu == null) uu = scaleFromDim(getAttr(tag, "height"), vbH);
+  return { vbW, vbH, uuPerMm: uu };
+}
+
+function shapeBBox(name, el) {
+  const num = (a) => { const v = getAttr(el, a); const f = v == null ? NaN : parseFloat(v); return isNaN(f) ? null : f; };
+  if (name === "rect") return [num("width"), num("height")];
+  if (name === "circle") { const r = num("r"); return r == null ? [null, null] : [2*r, 2*r]; }
+  if (name === "ellipse") { const rx = num("rx"), ry = num("ry"); return (rx == null || ry == null) ? [null, null] : [2*rx, 2*ry]; }
+  if (name === "polygon" || name === "polyline") {
+    const pts = (getAttr(el, "points") || "").match(/[-+]?[0-9]*\.?[0-9]+/g) || [];
+    const nums = pts.map(Number);
+    const xs = nums.filter((_, i) => i % 2 === 0), ys = nums.filter((_, i) => i % 2 === 1);
+    if (xs.length && ys.length) return [Math.max(...xs) - Math.min(...xs), Math.max(...ys) - Math.min(...ys)];
+  }
+  return [null, null];
+}
+function parseTagGeometry(xml) {
+  const pos = xml.indexOf('inkscape:label="Nametag Border"');
+  if (pos < 0) throw new Error('Could not find an element with inkscape:label="Nametag Border".');
+  const s = xml.lastIndexOf("<", pos), e = xml.indexOf(">", pos);
+  if (s < 0 || e < 0) throw new Error('Malformed "Nametag Border" element.');
+  const el = xml.slice(s, e + 1);
+  const nm = (el.match(/<\s*([A-Za-z0-9:]+)/) || [])[1] || "";
+  const tagName = nm.split(":").pop().toLowerCase();
+  const [w, h] = shapeBBox(tagName, el);
+  if (w == null || h == null)
+    throw new Error('Could not determine the size of the "Nametag Border" <' + (tagName || "?") + "> element.");
+  let stroke = 0;
+  const style = getAttr(el, "style") || "";
+  const sm = style.match(/stroke-width:\s*([0-9.]+)/);
+  if (sm) stroke = parseFloat(sm[1]);
+  else if (getAttr(el, "stroke-width")) stroke = parseFloat(getAttr(el, "stroke-width")) || 0;
+  return { w, h, stroke };
+}
+
+function computeGrid(pw, ph, tw, th, stroke, gap, margin) {
+  const pitchX = tw + gap, pitchY = th + gap;
+  const availW = pw - stroke - 2*margin, availH = ph - stroke - 2*margin;
+  let cols = availW >= tw ? Math.floor((availW - tw) / pitchX) + 1 : 0;
+  let rows = availH >= th ? Math.floor((availH - th) / pitchY) + 1 : 0;
+  cols = Math.max(cols, 1); rows = Math.max(rows, 1);
+  return { cols, rows, pitchX, pitchY };
+}
+
+function detectPlaceholders(xml) {
+  const re = /\{\{\s*([^{}]+?)\s*\}\}/g;
+  const tokens = new Map();
+  let m;
+  while ((m = re.exec(xml))) if (!tokens.has(m[0])) tokens.set(m[0], m[1].trim().toLowerCase());
+  return tokens;
+}
+
+function parseCSV(text) {
+  text = text.replace(/^\uFEFF/, "");
+  const rows = [];
+  let field = "", row = [], inQ = false, i = 0;
+  while (i < text.length) {
+    const c = text[i];
+    if (inQ) {
+      if (c === '"') { if (text[i + 1] === '"') { field += '"'; i += 2; continue; } inQ = false; i++; continue; }
+      field += c; i++; continue;
+    }
+    if (c === '"') { inQ = true; i++; continue; }
+    if (c === ",") { row.push(field); field = ""; i++; continue; }
+    if (c === "\r") { i++; continue; }
+    if (c === "\n") { row.push(field); rows.push(row); row = []; field = ""; i++; continue; }
+    field += c; i++;
+  }
+  if (field.length > 0 || row.length > 0) { row.push(field); rows.push(row); }
+  if (!rows.length) return { fields: [], rows: [] };
+  const fields = rows[0].map((s) => s.trim());
+  const out = [];
+  for (let r = 1; r < rows.length; r++) {
+    const obj = {}; let any = false;
+    for (let c = 0; c < fields.length; c++) {
+      const key = fields[c].toLowerCase();
+      const val = (rows[r][c] == null ? "" : rows[r][c]).trim();
+      obj[key] = val; if (val) any = true;
+    }
+    if (any) out.push(obj);
+  }
+  return { fields, rows: out };
+}
+
+function makeTagCopy(xml, row, tokens, index, tx, ty, missing) {
+  let body = xml;
+  for (const [raw, field] of tokens) {
+    let value;
+    if (Object.prototype.hasOwnProperty.call(row, field)) value = row[field];
+    else { missing.add(field); value = ""; }
+    body = body.split(raw).join(xmlEscape(value));
+  }
+  body = body.replace(/(\s)id="([^"]*)"/g, (mm, sp, id) => sp + 'id="' + id + "__" + index + '"');
+  return '<g id="nametag-' + index + '" inkscape:label="Nametag ' + (index + 1) +
+         '" transform="translate(' + fmt(tx) + "," + fmt(ty) + ')">' + body + "</g>";
+}
+
+function generate(svgText, csvText, opts) {
+  const gapMm = opts.gapMm ?? 2, marginMm = opts.marginMm ?? 0;
+  const [start, end] = findLabeledGroup(svgText, "Nametag");
+  const prefix = svgText.slice(0, start), suffix = svgText.slice(end);
+  const nametagXml = svgText.slice(start, end);
+
+  const tokens = detectPlaceholders(nametagXml);
+  if (tokens.size === 0)
+    throw new Error("No {{placeholder}} tokens found inside the nametag group. Add at least one, e.g. {{NAME}}.");
+
+  const { vbW, vbH, uuPerMm } = parsePage(svgText);
+  const { w: tagW, h: tagH, stroke } = parseTagGeometry(nametagXml);
+  const scale = uuPerMm || 1;
+  const gap = gapMm * scale, margin = marginMm * scale;
+  const { cols, rows, pitchX, pitchY } = computeGrid(vbW, vbH, tagW, tagH, stroke, gap, margin);
+  const perPage = cols * rows;
+
+  const { fields, rows: dataRows } = parseCSV(csvText);
+  if (!dataRows.length) throw new Error("No data rows found in the CSV.");
+
+  const templateFields = [...new Set([...tokens.values()])];
+  const headerSet = new Set(fields.map((f) => f.trim().toLowerCase()));
+  const matched = templateFields.filter((f) => headerSet.has(f));
+  const unmatched = templateFields.filter((f) => !headerSet.has(f));
+  if (!matched.length)
+    throw new Error("CSV columns [" + fields.join(", ") + "] do not match any template field [" +
+                    templateFields.join(", ") + "].");
+
+  const missing = new Set();
+  const totalPages = Math.max(1, Math.ceil(dataRows.length / perPage));
+  const sheets = [];
+  for (let p = 0; p < totalPages; p++) {
+    const chunk = dataRows.slice(p * perPage, (p + 1) * perPage);
+    let copies = "";
+    chunk.forEach((dr, i) => {
+      const col = i % cols, gr = Math.floor(i / cols);
+      const tx = margin + col * pitchX, ty = margin + gr * pitchY;
+      copies += makeTagCopy(nametagXml, dr, tokens, i, tx, ty, missing);
+    });
+    sheets.push({
+      name: p === 0 ? "output.svg" : "output_" + (p + 1) + ".svg",
+      svg: prefix + copies + suffix,
+      count: chunk.length,
+    });
+  }
+
+  const mmPerUu = uuPerMm ? 1 / uuPerMm : null;
+  return {
+    sheets,
+    fields: templateFields, matched, unmatched: [...unmatched].sort(), csvColumns: fields,
+    grid: { cols, rows }, perPage, records: dataRows.length,
+    tagSizeIn: mmPerUu ? [tagW * mmPerUu / 25.4, tagH * mmPerUu / 25.4] : null,
+    pageSizeIn: mmPerUu ? [vbW * mmPerUu / 25.4, vbH * mmPerUu / 25.4] : null,
+    tagSizeUu: [tagW, tagH], pageSizeUu: [vbW, vbH],
+  };
+}
+
+/* ---------------- embedded example ----------------------------------------- */
+
+const EXAMPLE_SVG = `<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<svg xmlns="http://www.w3.org/2000/svg"
+     xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape"
+     width="19.5in" height="11in" viewBox="0 0 495.3 279.4" version="1.1">
+  <g id="nametag" inkscape:label="Nametag">
+    <text x="44.45" y="11" text-anchor="middle" font-family="sans-serif" font-size="5" letter-spacing="0.6" fill="#000000">HELLO MY NAME IS</text>
+    <line x1="6" y1="15" x2="82.9" y2="15" stroke="#000000" stroke-width="0.3"/>
+    <text x="44.45" y="36" text-anchor="middle" font-family="sans-serif" font-size="13" font-weight="bold" fill="#000000">{{NAME}}</text>
+    <text x="44.45" y="49" text-anchor="middle" font-family="sans-serif" font-size="6" fill="#000000">{{ROLE}}</text>
+    <rect id="badge-cut" inkscape:label="Nametag Border" x="0" y="0" width="88.9" height="57.15" rx="4" ry="4" style="fill:none;stroke:#ff0000;stroke-width:0.3"/>
+  </g>
+</svg>`;
+
+const EXAMPLE_CSV = `Name,Role
+Sally Joe,Volunteer
+Jim Bob,Scoutmaster
+Harish Kuthrapali,Committee Chair
+Sharon Parks,Den Leader
+Miguel Santos,Treasurer
+Aiko Tanaka,Secretary`;
+
+/* ---------------- UI wiring ------------------------------------------------ */
+
+const state = { tpl: null, csv: null, result: null, current: 0 };
+const $ = (id) => document.getElementById(id);
+
+function wireDrop(dropId, inputId, onLoad, nameId) {
+  const drop = $(dropId), input = $(inputId);
+  drop.addEventListener("click", () => input.click());
+  input.addEventListener("change", () => { if (input.files[0]) readFile(input.files[0], onLoad, nameId); });
+  drop.addEventListener("dragover", (e) => { e.preventDefault(); drop.classList.add("drag"); });
+  drop.addEventListener("dragleave", () => drop.classList.remove("drag"));
+  drop.addEventListener("drop", (e) => {
+    e.preventDefault(); drop.classList.remove("drag");
+    if (e.dataTransfer.files[0]) readFile(e.dataTransfer.files[0], onLoad, nameId);
+  });
+}
+function readFile(file, onLoad, nameId) {
+  const reader = new FileReader();
+  reader.onload = () => { onLoad(reader.result); $(nameId).textContent = file.name; run(); };
+  reader.readAsText(file);
+}
+
+function showMessage(kind, text) {
+  const el = $("message");
+  el.className = "msg" + (kind ? " " + kind : "");
+  el.textContent = text || "";
+}
+
+function run() {
+  if (!state.tpl || !state.csv) { return; }
+  const gapMm = parseFloat($("gap").value) || 0;
+  const marginMm = parseFloat($("margin").value) || 0;
+  let res;
+  try {
+    res = generate(state.tpl, state.csv, { gapMm, marginMm });
+  } catch (err) {
+    state.result = null;
+    showMessage("err", "⚠ " + err.message);
+    $("info").style.display = "none";
+    $("dlOneBtn").disabled = true; $("dlAllBtn").disabled = true;
+    $("sheetSelect").style.display = "none";
+    return;
+  }
+  state.result = res; state.current = 0;
+  if (res.unmatched.length)
+    showMessage("warn", "Template fields with no CSV column (left blank): " + res.unmatched.join(", "));
+  else
+    showMessage("", "");
+  renderInfo(res);
+  renderSheetSelect(res);
+  renderPreview();
+  $("dlOneBtn").disabled = false; $("dlAllBtn").disabled = false;
+}
+
+function renderInfo(res) {
+  const info = $("info");
+  const tag = res.tagSizeIn ? res.tagSizeIn.map((v) => v.toFixed(2) + "in").join(" × ")
+                            : res.tagSizeUu.map((v) => (+v.toFixed(2)) + "uu").join(" × ");
+  const bed = res.pageSizeIn ? res.pageSizeIn.map((v) => v.toFixed(2) + "in").join(" × ")
+                            : res.pageSizeUu.map((v) => (+v.toFixed(2)) + "uu").join(" × ");
+  const fieldPills = res.fields.map((f) =>
+    `<span class="pill ${res.matched.includes(f) ? "ok" : "warn"}">${f}${res.matched.includes(f) ? "" : " ✕"}</span>`
+  ).join("");
+  info.style.display = "block";
+  info.innerHTML =
+    `<div class="line"><span class="k">Bed</span><span class="v">${bed}</span></div>` +
+    `<div class="line"><span class="k">Tag</span><span class="v">${tag}</span></div>` +
+    `<div class="line"><span class="k">Grid</span><span class="v">${res.grid.cols} × ${res.grid.rows} = ${res.perPage}/sheet</span></div>` +
+    `<div class="line"><span class="k">Records</span><span class="v">${res.records} → ${res.sheets.length} sheet(s)</span></div>` +
+    `<div class="line"><span class="k">Fields</span><span class="v">${fieldPills}</span></div>`;
+}
+
+function renderSheetSelect(res) {
+  const sel = $("sheetSelect");
+  if (res.sheets.length <= 1) { sel.style.display = "none"; return; }
+  sel.style.display = "";
+  sel.innerHTML = res.sheets.map((s, i) =>
+    `<option value="${i}">Sheet ${i + 1} / ${res.sheets.length} — ${s.count} tags</option>`).join("");
+  sel.value = String(state.current);
+}
+
+function renderPreview() {
+  const stage = $("stage");
+  const res = state.result;
+  if (!res) { stage.innerHTML = '<div class="empty">Nothing to preview yet.</div>'; return; }
+  const sheet = res.sheets[state.current];
+  const wrap = document.createElement("div");
+  wrap.className = "sheet";
+  wrap.innerHTML = sheet.svg;
+  const svg = wrap.querySelector("svg");
+  if (svg) {
+    svg.removeAttribute("width");
+    svg.removeAttribute("height");
+    svg.setAttribute("preserveAspectRatio", "xMidYMid meet");
+  }
+  stage.innerHTML = "";
+  stage.appendChild(wrap);
+  const a = $("dlOne");
+  a.href = URL.createObjectURL(new Blob([sheet.svg], { type: "image/svg+xml" }));
+  a.download = sheet.name;
+}
+
+function downloadAll() {
+  if (!state.result) return;
+  state.result.sheets.forEach((s, i) => {
+    setTimeout(() => {
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(new Blob([s.svg], { type: "image/svg+xml" }));
+      a.download = s.name;
+      document.body.appendChild(a); a.click(); a.remove();
+    }, i * 200);
+  });
+}
+
+wireDrop("tplDrop", "tplInput", (t) => { state.tpl = t; }, "tplName");
+wireDrop("csvDrop", "csvInput", (t) => { state.csv = t; }, "csvName");
+$("gap").addEventListener("input", run);
+$("margin").addEventListener("input", run);
+$("genBtn").addEventListener("click", run);
+$("sheetSelect").addEventListener("change", (e) => { state.current = parseInt(e.target.value, 10); renderPreview(); });
+$("dlAllBtn").addEventListener("click", downloadAll);
+$("exampleBtn").addEventListener("click", () => {
+  state.tpl = EXAMPLE_SVG; state.csv = EXAMPLE_CSV;
+  $("tplName").textContent = "example-classic-badge.svg";
+  $("csvName").textContent = "example-names.csv";
+  run();
+});
+</script>
+</body>
+</html>
