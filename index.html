@@ -801,18 +801,20 @@ function clearOutputs(hint) {
 
 // Structural change (load / add / delete row|column): rebuild the grid, then merge.
 /* ---------------- backdrop preview (certificate alignment aid) ----------- */
-/* A "Backdrop" Inkscape layer holds artwork of the pre-printed stock you print
-   onto. It's a preview-only aid: shown on screen when the toggle is on, but
-   ALWAYS forced hidden in downloads so only the merge fields actually print.
-   The core engine never touches it; backdrop handling lives entirely here. */
+/* A "Backdrop" element holds artwork of the pre-printed stock you print onto —
+   it can be a whole layer (<g>) or a single <image> bearing the inkscape:label.
+   It's a preview-only aid: shown on screen when the toggle is on, but ALWAYS
+   forced hidden in downloads so only the merge fields actually print. The core
+   engine never touches it; backdrop handling lives entirely here. */
 const BACKDROP_LABELS = ["Backdrop", "Background", "Preview", "Mockup", "Proof"];
 
+// Find any element (<g>, <image>, ...) carrying one of the backdrop labels.
 function findBackdropLayer(svg) {
   for (const label of BACKDROP_LABELS) {
-    if (svg.indexOf('inkscape:label="' + label + '"') >= 0) {
-      try { const [start, end] = findLabeledGroup(svg, label); return { start, end }; }
-      catch (e) { continue; }
-    }
+    const labelPos = svg.indexOf('inkscape:label="' + label + '"');
+    if (labelPos < 0) continue;
+    const start = svg.lastIndexOf("<", labelPos);
+    if (start >= 0) return { start, labelPos };
   }
   return null;
 }
@@ -827,7 +829,7 @@ function setLayerDisplay(openTag, show) {
     decls.unshift("display:" + disp);
     tag = tag.replace(/style="[^"]*"/, 'style="' + decls.join(";") + '"');
   } else {
-    tag = tag.replace(/^<g/, '<g style="display:' + disp + '"');
+    tag = tag.replace(/^(<[a-zA-Z][\w:.\-]*)/, '$1 style="display:' + disp + '"');
   }
   return tag;
 }
@@ -836,7 +838,8 @@ function applyBackdrop(svgText, show) {
   if (!svgText) return svgText;
   const layer = findBackdropLayer(svgText);
   if (!layer) return svgText;
-  const gt = svgText.indexOf(">", layer.start);
+  // Search for the open-tag close from the label (skips any base64 before it).
+  const gt = svgText.indexOf(">", layer.labelPos);
   if (gt < 0) return svgText;
   const openTag = svgText.slice(layer.start, gt + 1);
   return svgText.slice(0, layer.start) + setLayerDisplay(openTag, show) + svgText.slice(gt + 1);
