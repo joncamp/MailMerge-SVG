@@ -61,6 +61,7 @@
   .msg { font-size: 13px; padding: 10px 12px; border-radius: 8px; margin-top: 10px; display: none; }
   .msg.err { display: block; background: rgba(224,106,106,.12); border: 1px solid var(--err); color: #ffb3b3; }
   .msg.warn { display: block; background: rgba(224,169,63,.12); border: 1px solid var(--warn); color: #ffd98a; }
+  .msg.hint { display: block; background: var(--panel2); border: 1px solid var(--line); color: var(--muted); }
   .preview-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 12px; flex-wrap: wrap; }
   select { background: var(--panel2); border: 1px solid var(--line); color: var(--text); border-radius: 8px; padding: 7px 10px; font-size: 13px; }
   .stage {
@@ -799,8 +800,13 @@ function regenerate() {
   const hasData = state.data.columns.length &&
     state.data.rows.some((r) => r.some((c) => String(c || "").trim() !== ""));
   if (!hasData) {
-    clearOutputs("Add a data row below (or upload a CSV) to preview.");
-    showMessage("", "");
+    // No usable data yet — still show a live preview of the template itself.
+    state.result = null; state.current = 0;
+    $("info").style.display = "none";
+    $("dlOneBtn").disabled = true; $("dlAllBtn").disabled = true;
+    $("sheetSelect").style.display = "none";
+    showSvgInStage(state.tpl);
+    showMessage("hint", "Previewing the template. Add a data row below (or upload a CSV) to merge your data.");
     updateModeUI(mode);
     return;
   }
@@ -872,22 +878,29 @@ function renderItemSelect(res) {
   sel.value = String(state.current);
 }
 
-function renderPreview() {
+function showSvgInStage(svgText) {
   const stage = $("stage");
-  const res = state.result;
-  if (!res) { stage.innerHTML = '<div class="empty">Nothing to preview yet.</div>'; return; }
-  const item = res.items[state.current];
   const wrap = document.createElement("div");
   wrap.className = "sheet";
-  wrap.innerHTML = item.svg;
+  wrap.innerHTML = svgText;
   const svg = wrap.querySelector("svg");
   if (svg) {
     svg.removeAttribute("width");
     svg.removeAttribute("height");
     svg.setAttribute("preserveAspectRatio", "xMidYMid meet");
+  } else {
+    stage.innerHTML = '<div class="empty">That file doesn’t contain an &lt;svg&gt; element.</div>';
+    return;
   }
   stage.innerHTML = "";
   stage.appendChild(wrap);
+}
+
+function renderPreview() {
+  const res = state.result;
+  if (!res) { $("stage").innerHTML = '<div class="empty">Nothing to preview yet.</div>'; return; }
+  const item = res.items[state.current];
+  showSvgInStage(item.svg);
   const a = $("dlOne");
   a.href = URL.createObjectURL(new Blob([item.svg], { type: "image/svg+xml" }));
   a.download = item.name;
