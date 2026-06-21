@@ -42,7 +42,8 @@ import sys
 PLACEHOLDER_RE = re.compile(r"\{\{\s*([^{}]+?)\s*\}\}")
 
 # Grid mode looks for a single repeating tile group carrying one of these
-# Inkscape labels; its cut outline is the same label followed by " Border".
+# Inkscape labels; its cut outline is labelled "Border" (or the tile label
+# followed by " Border", e.g. "Nametag Border").
 TILE_LABELS = ("Nametag", "Tile", "Cell")
 
 MM_PER_INCH = 25.4
@@ -197,17 +198,30 @@ def _scale_from_dimension(dim_value, viewbox_extent):
     return viewbox_extent / physical_mm
 
 
-def parse_tag_geometry(nametag_xml, border_label):
-    """Return (width, height, stroke) of the element labelled ``<border_label>``,
-    in the template's user units (the same space as the viewBox and transforms).
+def parse_tag_geometry(nametag_xml, border_labels):
+    """Return (width, height, stroke) of the border element, in the template's
+    user units (the same space as the viewBox and transforms).
+
+    ``border_labels`` is a label or list of candidate labels tried in order, so
+    the cut outline can be labelled either ``<Tile> Border`` (e.g.
+    ``Nametag Border``) or simply ``Border``.
 
     The border may be any of ``rect``, ``circle``, ``ellipse``, ``polygon`` or
     ``polyline``, so tiles can be any shape; the width/height returned are the
     shape's bounding box, which is what the grid tiles on."""
-    border_pos = nametag_xml.find(f'inkscape:label="{border_label}"')
+    if isinstance(border_labels, str):
+        border_labels = [border_labels]
+    border_pos = -1
+    border_label = border_labels[0]
+    for cand in border_labels:
+        pos = nametag_xml.find(f'inkscape:label="{cand}"')
+        if pos != -1:
+            border_pos, border_label = pos, cand
+            break
     if border_pos == -1:
+        shown = " or ".join(f'"{lbl}"' for lbl in border_labels)
         raise ValueError(
-            f'Could not find an element with inkscape:label="{border_label}" '
+            f"Could not find a border element with inkscape:label {shown} "
             "in the tile group."
         )
     el_start = nametag_xml.rfind("<", 0, border_pos)
@@ -410,7 +424,7 @@ def generate_grid(svg_text, tile, names_csv_path, output_path, gap=2.0, margin=0
     prefix = svg_text[:start]
     suffix = svg_text[end:]
     nametag_xml = svg_text[start:end]
-    border_label = f"{tile_label} Border"
+    border_labels = [f"{tile_label} Border", "Border"]
 
     tokens = detect_placeholders(nametag_xml)
     if not tokens:
@@ -420,7 +434,7 @@ def generate_grid(svg_text, tile, names_csv_path, output_path, gap=2.0, margin=0
         )
 
     page_w, page_h, uu_per_mm = parse_page(svg_text)
-    tag_w, tag_h, stroke = parse_tag_geometry(nametag_xml, border_label)
+    tag_w, tag_h, stroke = parse_tag_geometry(nametag_xml, border_labels)
 
     # ``gap`` and ``margin`` arrive in millimetres; convert them into the
     # template's user units so spacing is physically correct on any template.
