@@ -23,6 +23,27 @@ containing one nametag per name, arranged in a grid that fits the Glowforge bed.
 See [`samples/`](samples/) for five ready-to-use templates in different shapes
 (rounded rectangle, oval, circle, rounded square, hexagon) with their own CSVs.
 
+## Web app (no install)
+
+[`index.html`](index.html) is a self-contained, browser-based version of the same
+tool — no Python, no server, no dependencies. Drop in your template SVG and CSV,
+adjust the gap/margin, preview the grid, and download each laid-out sheet. All
+processing happens locally in your browser; nothing is uploaded.
+
+**Run it three ways:**
+
+- **Open locally** — double-click `index.html` (or open it in any browser).
+- **GitHub Pages (free hosting)** — once this is merged to `main`, the included
+  workflow ([`.github/workflows/pages.yml`](.github/workflows/pages.yml))
+  publishes it automatically. In the repo, enable **Settings → Pages → Source:
+  GitHub Actions** once; the app is then live at
+  `https://joncamp.github.io/Nametag-Generator/`.
+- **Gist** — paste `index.html` into a public [gist](https://gist.github.com) and
+  open it through `https://htmlpreview.github.io/?<raw-gist-url>`.
+
+The web app and the Python CLI share identical merge logic and produce
+byte-for-byte identical output.
+
 ## How it works
 
 1. Reads the template and locates the nametag artwork (the `<g>` whose Inkscape
@@ -96,6 +117,7 @@ python nametag_generator.py --template samples/05-hexagon.svg --names samples/05
 - `template.svg` — SVG template containing one nametag with `{{...}}` placeholders.
 - `names.csv` — merge data; column headers match the template's placeholders.
 - `nametag_generator.py` — the generator.
+- `index.html` — browser-based version of the generator (no install).
 - `output.svg` — generated grid (created when you run the tool).
 - `samples/` — example templates in various shapes, each with a matching CSV.
 
