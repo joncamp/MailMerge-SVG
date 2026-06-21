@@ -19,7 +19,7 @@
   h1 { margin: 0 0 4px; font-size: 22px; }
   header p { margin: 0; color: var(--muted); font-size: 14px; }
   main { max-width: 1100px; margin: 0 auto; padding: 16px 20px 60px; display: grid;
-         grid-template-columns: 360px 1fr; gap: 20px; align-items: start; }
+         grid-template-columns: 360px 1fr; gap: 20px; align-items: stretch; }
   @media (max-width: 820px) { main { grid-template-columns: 1fr; } }
   .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 16px; }
   .panel h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .06em;
@@ -64,10 +64,11 @@
   .msg.hint { display: block; background: var(--panel2); border: 1px solid var(--line); color: var(--muted); }
   .preview-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 12px; flex-wrap: wrap; }
   select { background: var(--panel2); border: 1px solid var(--line); color: var(--text); border-radius: 8px; padding: 7px 10px; font-size: 13px; }
+  .preview-panel { display: flex; flex-direction: column; }
   .stage {
     background: repeating-conic-gradient(#2a2f3c 0% 25%, #262b37 0% 50%) 50% / 22px 22px;
     border: 1px solid var(--line); border-radius: 10px; padding: 12px;
-    height: 72vh; min-height: 360px;
+    flex: 1 1 auto; min-height: 280px;
     display: grid; overflow: auto; position: relative;
   }
   .sheet {
@@ -178,7 +179,7 @@
     <div class="msg" id="message"></div>
   </div>
 
-  <div class="panel">
+  <div class="panel preview-panel">
     <div class="preview-head">
       <h2 style="margin:0">Preview</h2>
       <div style="display:flex; gap:8px; align-items:center;">
@@ -1169,11 +1170,15 @@ $("stage").addEventListener("wheel", (e) => {
   e.preventDefault();
   setZoom(state.zoom * (e.deltaY < 0 ? 1.1 : 1 / 1.1));
 }, { passive: false });
-let zoomResizeTimer;
-window.addEventListener("resize", () => {
-  clearTimeout(zoomResizeTimer);
-  zoomResizeTimer = setTimeout(applyZoom, 120);
-});
+if (window.ResizeObserver) {
+  new ResizeObserver(() => applyZoom()).observe($("stage"));
+} else {
+  let zoomResizeTimer;
+  window.addEventListener("resize", () => {
+    clearTimeout(zoomResizeTimer);
+    zoomResizeTimer = setTimeout(applyZoom, 120);
+  });
+}
 $("dlAllBtn").addEventListener("click", downloadAll);
 $("addRowBtn").addEventListener("click", addRow);
 $("useTplFieldsBtn").addEventListener("click", useTemplateFields);
