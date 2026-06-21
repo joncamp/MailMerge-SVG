@@ -65,14 +65,18 @@
   .preview-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 12px; flex-wrap: wrap; }
   select { background: var(--panel2); border: 1px solid var(--line); color: var(--text); border-radius: 8px; padding: 7px 10px; font-size: 13px; }
   .preview-panel { display: flex; flex-direction: column; }
-  /* stage-frame is a stable, non-scrolling size reference: it never shows
-     scrollbars, so measuring it can't feed back into the zoom calculation. */
-  .stage-frame { flex: 1 1 auto; min-height: 280px; min-width: 0; display: flex; overflow: hidden; }
+  /* stage-frame is the stable size reference. position:relative + an absolutely
+     positioned stage means the sheet (which can be huge when zoomed) is taken
+     out of normal flow, so it can never contribute to the frame's/panel's
+     height. The frame's size is therefore driven only by flex layout, not by
+     content — breaking the zoom -> taller sheet -> taller panel -> remeasure
+     feedback loop. */
+  .stage-frame { position: relative; flex: 1 1 auto; min-height: 280px; min-width: 0; }
   .stage {
+    position: absolute; inset: 0;
     background: repeating-conic-gradient(#2a2f3c 0% 25%, #262b37 0% 50%) 50% / 22px 22px;
     border: 1px solid var(--line); border-radius: 10px; padding: 12px;
-    flex: 1 1 auto; min-width: 0;
-    display: grid; overflow: auto; position: relative;
+    display: grid; overflow: auto;
   }
   .sheet {
     background: #fff; box-shadow: 0 6px 24px rgba(0,0,0,.4); margin: auto; width: 100%;
